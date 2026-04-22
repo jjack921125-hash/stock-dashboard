@@ -3,5 +3,4 @@ finance-datareader
 yfinance
 plotly
 pandas
-ccxt
 requests
