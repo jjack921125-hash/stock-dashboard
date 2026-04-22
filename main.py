@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
-import requests
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="주식/코인 대시보드", page_icon="📈", layout="wide")
@@ -33,8 +32,7 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ───────────────────────────────────────────
-# 기본 종목 (시총 상위 10위, 2025년 4월 기준)
-# 코인은 바이비트 형식: "BTC/USDT"
+# 기본 종목 (시총 상위 10위, 2025년 4월 기준 고정)
 # ───────────────────────────────────────────
 DEFAULT_TICKERS = {
     "S&P500": {
@@ -110,58 +108,10 @@ def fmt(price, currency):
     return f"${price:,.4f}" if price < 1 else f"${price:,.2f}"
 
 # ───────────────────────────────────────────
-# 실시간 시총 기준 정렬 함수
-# ───────────────────────────────────────────
-
-@st.cache_data(ttl=3600)  # 주식 시총: 1시간마다 업데이트
-def get_sorted_stock_tickers(ticker_dict: dict, data_type: str):
-    """
-    yfinance로 시총을 가져와서 시총 내림차순으로 정렬합니다.
-    실패한 종목은 맨 뒤로 보냅니다.
-    """
-    market_caps = {}
-    for name, ticker in ticker_dict.items():
-        try:
-            yf_ticker = f"{ticker}.KS" if data_type == "KR" else ticker
-            info = yf.Ticker(yf_ticker).info
-            market_caps[name] = info.get("marketCap", 0) or 0
-        except:
-            market_caps[name] = 0
-
-    # 시총 기준 내림차순 정렬
-    sorted_names = sorted(market_caps, key=lambda x: market_caps[x], reverse=True)
-    return {name: ticker_dict[name] for name in sorted_names}
-
-
-@st.cache_data(ttl=300)  # 코인 시총: 5분마다 업데이트
-def get_sorted_coin_tickers(ticker_dict: dict):
-    """
-    바이비트 API로 코인 시총(거래량 기준)을 가져와서 정렬합니다.
-    바이비트는 시총 직접 제공 안 해서 24h 거래량으로 정렬해요.
-    """
-    volumes = {}
-    for name, symbol in ticker_dict.items():
-        try:
-            ticker_info = bybit.fetch_ticker(symbol)
-            # quoteVolume: 24시간 USDT 거래량 (시총 대용)
-            volumes[name] = ticker_info.get("quoteVolume", 0) or 0
-        except:
-            volumes[name] = 0
-
-    sorted_names = sorted(volumes, key=lambda x: volumes[x], reverse=True)
-    return {name: ticker_dict[name] for name in sorted_names}
-
-
-# ───────────────────────────────────────────
 # 바이비트 코인 OHLCV 데이터
 # ───────────────────────────────────────────
 @st.cache_data(ttl=60)
 def get_coin_data(symbol, bybit_interval, limit=500):
-    """
-    바이비트에서 캔들 데이터를 가져옵니다.
-    symbol: "BTC/USDT"
-    bybit_interval: "1", "5", "15", "60", "D", "W", "M"
-    """
     try:
         ohlcv = bybit.fetch_ohlcv(symbol, timeframe=bybit_interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp','Open','High','Low','Close','Volume'])
@@ -171,43 +121,35 @@ def get_coin_data(symbol, bybit_interval, limit=500):
     except Exception as e:
         return pd.DataFrame()
 
-
 # ───────────────────────────────────────────
 # 최고점 대비 하락률 계산
 # ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_drawdown_table(ticker_dict: dict, data_type: str, currency: str):
-    """
-    목록의 모든 종목에 대해 상장일부터 현재까지
-    최고점 대비 현재가 하락률을 계산합니다.
-    """
     rows = []
     for name, ticker in ticker_dict.items():
         try:
             if data_type == "COIN":
-                # 코인: 바이비트 일봉 전체
                 df = get_coin_data(ticker, "D", limit=1000)
             else:
-                # 주식: FinanceDataReader 상장일부터
-                yf_ticker = f"{ticker}.KS" if data_type == "KR" else ticker
-                info = yf.Ticker(yf_ticker).info
-                first_trade = info.get("firstTradeDateEpochUtc")
-                start = datetime.fromtimestamp(first_trade) if first_trade else datetime(2000,1,1)
+                # 주식: FinanceDataReader만 사용 (yfinance 없이)
+                # 상장일 대신 2000년부터 조회
+                start = datetime(2000, 1, 1)
                 df = fdr.DataReader(ticker, start, datetime.today())
 
             if df.empty:
                 continue
 
-            current  = df['Close'].iloc[-1]   # 현재가
-            all_time_high = df['High'].max()   # 역대 최고가
-            drawdown = (current - all_time_high) / all_time_high * 100  # 하락률
+            current       = df['Close'].iloc[-1]
+            all_time_high = df['High'].max()
+            drawdown      = (current - all_time_high) / all_time_high * 100
 
             rows.append({
-                "종목": name,
-                "현재가": fmt(current, currency),
-                "역대 최고가": fmt(all_time_high, currency),
+                "종목":           name,
+                "현재가":         fmt(current, currency),
+                "역대 최고가":    fmt(all_time_high, currency),
                 "최고점 대비 하락률": f"{drawdown:.2f}%",
-                "_drawdown": drawdown,  # 정렬용 숫자값 (화면엔 안 보여줌)
+                "_drawdown":      drawdown,
             })
         except:
             continue
@@ -216,11 +158,9 @@ def get_drawdown_table(ticker_dict: dict, data_type: str, currency: str):
         return pd.DataFrame()
 
     df_result = pd.DataFrame(rows)
-    # 하락률 기준 오름차순 정렬 (하락 많은 종목이 위로)
     df_result = df_result.sort_values("_drawdown").drop(columns=["_drawdown"])
     df_result.reset_index(drop=True, inplace=True)
     return df_result
-
 
 # ───────────────────────────────────────────
 # 사이드바
@@ -231,16 +171,11 @@ config    = MARKET_CONFIG[market]
 currency  = config["currency"]
 data_type = config["data_type"]
 
-# 시총 기준 실시간 정렬
-with st.spinner("시총 순위 불러오는 중..."):
-    raw_dict = st.session_state.tickers[market]
-    if data_type == "COIN":
-        sorted_dict = get_sorted_coin_tickers(raw_dict)
-    else:
-        sorted_dict = get_sorted_stock_tickers(raw_dict, data_type)
+# 시총 정렬 없이 그대로 사용
+ticker_dict = st.session_state.tickers[market]
 
-selected     = st.sidebar.selectbox("종목 선택", list(sorted_dict.keys()))
-ticker       = sorted_dict[selected]
+selected     = st.sidebar.selectbox("종목 선택", list(ticker_dict.keys()))
+ticker       = ticker_dict[selected]
 candle_label = st.sidebar.selectbox("캔들 단위", list(CANDLE_OPTIONS.keys()), index=7)
 candle_info  = CANDLE_OPTIONS[candle_label]
 
@@ -274,7 +209,7 @@ if st.sidebar.button("➕ 추가"):
 # ───────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🗑️ 종목 삭제")
-delete_target = st.sidebar.selectbox("삭제할 종목", list(sorted_dict.keys()), key="delete")
+delete_target = st.sidebar.selectbox("삭제할 종목", list(ticker_dict.keys()), key="delete")
 
 if st.sidebar.button("🗑️ 삭제"):
     del st.session_state.tickers[market][delete_target]
@@ -300,18 +235,19 @@ with st.spinner("데이터 불러오는 중..."):
                 df = get_coin_data(ticker, bybit_interval, limit=limit)
 
         elif candle_info["type"] == "minute":
+            # 분봉/시간봉: yfinance (분봉은 차단 가능성 낮음)
             yf_ticker = f"{ticker}.KS" if data_type == "KR" else ticker
             stock = yf.Ticker(yf_ticker)
-            df = stock.history(period=candle_info["yf_period"], interval=candle_info["yf_interval"])
+            df = stock.history(
+                period=candle_info["yf_period"],
+                interval=candle_info["yf_interval"]
+            )
             if not df.empty:
                 df.index = df.index.tz_localize(None)
 
         else:
-            yf_ticker = f"{ticker}.KS" if data_type == "KR" else ticker
-            stock = yf.Ticker(yf_ticker)
-            info  = stock.info
-            first_trade = info.get("firstTradeDateEpochUtc")
-            start = datetime.fromtimestamp(first_trade) if first_trade else datetime(2000,1,1)
+            # 일봉 이상: FinanceDataReader만 사용
+            start = datetime(2000, 1, 1)
             df = fdr.DataReader(ticker, start, datetime.today())
 
             resample_rule = RESAMPLE_MAP.get(candle_label)
@@ -335,7 +271,7 @@ else:
     prev       = df['Close'].iloc[-2] if len(df) > 1 else price
     change_pct = (price - prev) / prev * 100 if prev else 0
 
-    col1.metric("현재가",     fmt(price, currency), f"{change_pct:+.2f}%")
+    col1.metric("현재가",      fmt(price, currency), f"{change_pct:+.2f}%")
     col2.metric("기간 최고가", fmt(df['High'].max(), currency))
     col3.metric("기간 최저가", fmt(df['Low'].min(),  currency))
 
@@ -369,19 +305,12 @@ st.subheader(f"📉 {market} — 최고점 대비 현재 하락률")
 st.caption("일봉 기준 | 역대 최고가 대비 현재가 하락률 | 하락률 높은 순")
 
 with st.spinner("하락률 계산 중..."):
-    dd_df = get_drawdown_table(dict(sorted_dict), data_type, currency)
+    dd_df = get_drawdown_table(dict(ticker_dict), data_type, currency)
 
 if dd_df.empty:
     st.warning("하락률 데이터를 불러올 수 없습니다.")
 else:
-    # 하락률에 따라 색상 적용
     def color_drawdown(val):
-        """
-        하락률 셀 색상:
-        -10% 미만: 연한 파란색
-        -30% 미만: 파란색
-        -50% 미만: 진한 파란색
-        """
         try:
             v = float(val.replace('%',''))
             if v < -50:
