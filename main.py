@@ -1,20 +1,15 @@
 import streamlit as st
 import FinanceDataReader as fdr
 import yfinance as yf
-import ccxt
 import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
+import requests
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="주식/코인 대시보드", page_icon="📈", layout="wide")
 st.title("📈 주식/코인 대시보드")
-
-# ───────────────────────────────────────────
-# 바이비트 객체 생성
-# ───────────────────────────────────────────
-bybit = ccxt.bybit()
 
 # ───────────────────────────────────────────
 # 영구 저장 함수
@@ -32,37 +27,78 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ───────────────────────────────────────────
-# 기본 종목 (시총 상위 10위, 2025년 4월 기준 고정)
+# 기본 종목
+# S&P500: 나스닥 중복 제외 시총 상위 10위
+# 나스닥: 시총 상위 10위
+# 코스피/코스닥: 시총 상위 10위
+# 코인: 스테이블코인 제외 시총 상위 10위
 # ───────────────────────────────────────────
 DEFAULT_TICKERS = {
     "S&P500": {
-        "Apple": "AAPL", "Microsoft": "MSFT", "NVIDIA": "NVDA",
-        "Amazon": "AMZN", "Alphabet": "GOOGL", "Meta": "META",
-        "Berkshire": "BRK-B", "Broadcom": "AVGO", "Tesla": "TSLA", "JPMorgan": "JPM",
+        "JPMorgan":         "JPM",
+        "Berkshire":        "BRK-B",
+        "Eli Lilly":        "LLY",
+        "Visa":             "V",
+        "ExxonMobil":       "XOM",
+        "UnitedHealth":     "UNH",
+        "Johnson&Johnson":  "JNJ",
+        "Mastercard":       "MA",
+        "Procter&Gamble":   "PG",
+        "Home Depot":       "HD",
     },
     "나스닥": {
-        "Apple": "AAPL", "Microsoft": "MSFT", "NVIDIA": "NVDA",
-        "Amazon": "AMZN", "Alphabet": "GOOGL", "Meta": "META",
-        "Broadcom": "AVGO", "Tesla": "TSLA", "Costco": "COST", "Netflix": "NFLX",
+        "Apple":            "AAPL",
+        "Microsoft":        "MSFT",
+        "NVIDIA":           "NVDA",
+        "Amazon":           "AMZN",
+        "Alphabet":         "GOOGL",
+        "Meta":             "META",
+        "Broadcom":         "AVGO",
+        "Tesla":            "TSLA",
+        "Costco":           "COST",
+        "Netflix":          "NFLX",
     },
     "코스피": {
-        "삼성전자": "005930", "SK하이닉스": "000660", "삼성바이오로직스": "207940",
-        "LG에너지솔루션": "373220", "현대차": "005380", "셀트리온": "068270",
-        "기아": "000270", "KB금융": "105560", "신한지주": "055550", "삼성물산": "028260",
+        "삼성전자":         "005930",
+        "SK하이닉스":       "000660",
+        "삼성바이오로직스": "207940",
+        "LG에너지솔루션":   "373220",
+        "현대차":           "005380",
+        "셀트리온":         "068270",
+        "기아":             "000270",
+        "KB금융":           "105560",
+        "신한지주":         "055550",
+        "삼성물산":         "028260",
     },
     "코스닥": {
-        "에코프로비엠": "247540", "HLB": "028300", "에코프로": "086520",
-        "알테오젠": "196170", "셀트리온제약": "068760", "리가켐바이오": "141080",
-        "클래시스": "214150", "휴젤": "145020", "HPSP": "403870", "삼천당제약": "000250",
+        "에코프로비엠":     "247540",
+        "HLB":              "028300",
+        "에코프로":         "086520",
+        "알테오젠":         "196170",
+        "셀트리온제약":     "068760",
+        "리가켐바이오":     "141080",
+        "클래시스":         "214150",
+        "휴젤":             "145020",
+        "HPSP":             "403870",
+        "삼천당제약":       "000250",
     },
     "코인": {
-        "Bitcoin": "BTC/USDT", "Ethereum": "ETH/USDT", "BNB": "BNB/USDT",
-        "Solana": "SOL/USDT", "XRP": "XRP/USDT", "Dogecoin": "DOGE/USDT",
-        "Cardano": "ADA/USDT", "Avalanche": "AVAX/USDT", "Chainlink": "LINK/USDT",
-        "Polkadot": "DOT/USDT",
+        "Bitcoin":          "BTC/USDT",
+        "Ethereum":         "ETH/USDT",
+        "BNB":              "BNB/USDT",
+        "Solana":           "SOL/USDT",
+        "XRP":              "XRP/USDT",
+        "Dogecoin":         "DOGE/USDT",
+        "Cardano":          "ADA/USDT",
+        "Avalanche":        "AVAX/USDT",
+        "Chainlink":        "LINK/USDT",
+        "Polkadot":         "DOT/USDT",
     },
 }
 
+# ───────────────────────────────────────────
+# 시장별 설정
+# ───────────────────────────────────────────
 MARKET_CONFIG = {
     "S&P500": {"currency": "USD", "data_type": "US"},
     "나스닥":  {"currency": "USD", "data_type": "US"},
@@ -71,22 +107,40 @@ MARKET_CONFIG = {
     "코인":    {"currency": "USD", "data_type": "COIN"},
 }
 
+# ───────────────────────────────────────────
+# 캔들 단위 설정
+# ───────────────────────────────────────────
 CANDLE_OPTIONS = {
-    "1분":   {"type": "minute", "yf_interval": "1m",  "yf_period": "7d",  "bybit_interval": "1"},
-    "3분":   {"type": "minute", "yf_interval": "3m",  "yf_period": "7d",  "bybit_interval": "3"},
-    "5분":   {"type": "minute", "yf_interval": "5m",  "yf_period": "7d",  "bybit_interval": "5"},
-    "15분":  {"type": "minute", "yf_interval": "15m", "yf_period": "60d", "bybit_interval": "15"},
-    "30분":  {"type": "minute", "yf_interval": "30m", "yf_period": "60d", "bybit_interval": "30"},
-    "60분":  {"type": "minute", "yf_interval": "60m", "yf_period": "60d", "bybit_interval": "60"},
-    "4시간": {"type": "minute", "yf_interval": "4h",  "yf_period": "60d", "bybit_interval": "240"},
-    "1일":   {"type": "daily",  "bybit_interval": "D"},
-    "1주":   {"type": "weekly", "bybit_interval": "W"},
-    "1달":   {"type": "monthly","bybit_interval": "M"},
-    "1년":   {"type": "yearly", "bybit_interval": "M"},
+    "1분":   {"type": "minute", "yf_interval": "1m",  "yf_period": "7d",  "cg_interval": "1"},
+    "3분":   {"type": "minute", "yf_interval": "3m",  "yf_period": "7d",  "cg_interval": "3"},
+    "5분":   {"type": "minute", "yf_interval": "5m",  "yf_period": "7d",  "cg_interval": "5"},
+    "15분":  {"type": "minute", "yf_interval": "15m", "yf_period": "60d", "cg_interval": "15"},
+    "30분":  {"type": "minute", "yf_interval": "30m", "yf_period": "60d", "cg_interval": "30"},
+    "60분":  {"type": "minute", "yf_interval": "60m", "yf_period": "60d", "cg_interval": "60"},
+    "4시간": {"type": "minute", "yf_interval": "4h",  "yf_period": "60d", "cg_interval": "240"},
+    "1일":   {"type": "daily",  "cg_interval": "D"},
+    "1주":   {"type": "weekly", "cg_interval": "W"},
+    "1달":   {"type": "monthly","cg_interval": "M"},
+    "1년":   {"type": "yearly", "cg_interval": "M"},
 }
 
 RESAMPLE_MAP = {
     "1일": None, "1주": "W", "1달": "ME", "1년": "YE",
+}
+
+# CoinGecko ID 매핑
+# CoinGecko는 티커 대신 고유 ID를 사용해요
+COINGECKO_IDS = {
+    "BTC/USDT":  "bitcoin",
+    "ETH/USDT":  "ethereum",
+    "BNB/USDT":  "binancecoin",
+    "SOL/USDT":  "solana",
+    "XRP/USDT":  "ripple",
+    "DOGE/USDT": "dogecoin",
+    "ADA/USDT":  "cardano",
+    "AVAX/USDT": "avalanche-2",
+    "LINK/USDT": "chainlink",
+    "DOT/USDT":  "polkadot",
 }
 
 # ───────────────────────────────────────────
@@ -95,6 +149,7 @@ RESAMPLE_MAP = {
 if "tickers" not in st.session_state:
     st.session_state.tickers = load_data()
 
+# 새 시장 키가 없으면 기본값 추가
 for k in DEFAULT_TICKERS:
     if k not in st.session_state.tickers:
         st.session_state.tickers[k] = DEFAULT_TICKERS[k].copy()
@@ -108,16 +163,39 @@ def fmt(price, currency):
     return f"${price:,.4f}" if price < 1 else f"${price:,.2f}"
 
 # ───────────────────────────────────────────
-# 바이비트 코인 OHLCV 데이터
+# CoinGecko 코인 데이터 가져오기
 # ───────────────────────────────────────────
 @st.cache_data(ttl=60)
-def get_coin_data(symbol, bybit_interval, limit=500):
+def get_coin_data(symbol, cg_interval, limit=500):
+    """
+    CoinGecko API로 코인 OHLC 데이터를 가져옵니다.
+    분봉은 CoinGecko 무료 API에서 미지원 → 일봉으로 대체해요.
+    """
+    coin_id = COINGECKO_IDS.get(symbol, symbol.split("/")[0].lower())
+
     try:
-        ohlcv = bybit.fetch_ohlcv(symbol, timeframe=bybit_interval, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp','Open','High','Low','Close','Volume'])
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
+
+        # CoinGecko 무료 API는 일봉만 지원
+        # 분봉/시간봉 선택해도 일봉 데이터로 보여줘요
+        if cg_interval in ["1","3","5","15","30","60","240"]:
+            days = 1       # 분봉 선택 시 최근 1일 일봉
+        else:
+            days = "max"   # 일봉 이상은 전체 기간
+
+        params = {"vs_currency": "usd", "days": days}
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+
+        if not isinstance(data, list) or len(data) == 0:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(data, columns=['timestamp','Open','High','Low','Close'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
+        df['Volume'] = 0  # CoinGecko OHLC API는 거래량 미제공
         return df
+
     except Exception as e:
         return pd.DataFrame()
 
@@ -126,14 +204,17 @@ def get_coin_data(symbol, bybit_interval, limit=500):
 # ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_drawdown_table(ticker_dict: dict, data_type: str, currency: str):
+    """
+    목록의 모든 종목에 대해
+    역대 최고가 대비 현재가 하락률을 계산합니다.
+    """
     rows = []
     for name, ticker in ticker_dict.items():
         try:
             if data_type == "COIN":
                 df = get_coin_data(ticker, "D", limit=1000)
             else:
-                # 주식: FinanceDataReader만 사용 (yfinance 없이)
-                # 상장일 대신 2000년부터 조회
+                # 주식: 2000년부터 현재까지 일봉
                 start = datetime(2000, 1, 1)
                 df = fdr.DataReader(ticker, start, datetime.today())
 
@@ -145,11 +226,11 @@ def get_drawdown_table(ticker_dict: dict, data_type: str, currency: str):
             drawdown      = (current - all_time_high) / all_time_high * 100
 
             rows.append({
-                "종목":           name,
-                "현재가":         fmt(current, currency),
-                "역대 최고가":    fmt(all_time_high, currency),
+                "종목":               name,
+                "현재가":             fmt(current, currency),
+                "역대 최고가":        fmt(all_time_high, currency),
                 "최고점 대비 하락률": f"{drawdown:.2f}%",
-                "_drawdown":      drawdown,
+                "_drawdown":          drawdown,
             })
         except:
             continue
@@ -170,8 +251,6 @@ market    = st.sidebar.selectbox("시장 선택", list(MARKET_CONFIG.keys()))
 config    = MARKET_CONFIG[market]
 currency  = config["currency"]
 data_type = config["data_type"]
-
-# 시총 정렬 없이 그대로 사용
 ticker_dict = st.session_state.tickers[market]
 
 selected     = st.sidebar.selectbox("종목 선택", list(ticker_dict.keys()))
@@ -190,7 +269,7 @@ if data_type == "KR":
     new_ticker = st.sidebar.text_input("종목코드 (6자리)", placeholder="예: 066570")
 elif data_type == "COIN":
     new_name   = st.sidebar.text_input("코인명", placeholder="예: Shiba Inu")
-    new_ticker = st.sidebar.text_input("티커 (바이비트 형식)", placeholder="예: SHIB/USDT")
+    new_ticker = st.sidebar.text_input("티커 (CoinGecko ID)", placeholder="예: shiba-inu")
 else:
     new_name   = st.sidebar.text_input("종목명", placeholder="예: AMD")
     new_ticker = st.sidebar.text_input("티커", placeholder="예: AMD")
@@ -223,19 +302,19 @@ if st.sidebar.button("🗑️ 삭제"):
 with st.spinner("데이터 불러오는 중..."):
     try:
         if data_type == "COIN":
-            bybit_interval = candle_info["bybit_interval"]
-            if candle_label == "1년":
-                df = get_coin_data(ticker, "M", limit=120)
-                if not df.empty:
-                    df = df.resample("YE").agg({
-                        'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'
-                    }).dropna()
-            else:
-                limit = 500 if candle_info["type"] == "minute" else 1000
-                df = get_coin_data(ticker, bybit_interval, limit=limit)
+            cg_interval = candle_info["cg_interval"]
+            df = get_coin_data(ticker, cg_interval)
+
+            # 주/월/년봉 리샘플링
+            resample_rule = RESAMPLE_MAP.get(candle_label)
+            if resample_rule and not df.empty:
+                df = df.resample(resample_rule).agg({
+                    'Open':'first','High':'max',
+                    'Low':'min','Close':'last','Volume':'sum'
+                }).dropna()
 
         elif candle_info["type"] == "minute":
-            # 분봉/시간봉: yfinance (분봉은 차단 가능성 낮음)
+            # 분봉/시간봉: yfinance
             yf_ticker = f"{ticker}.KS" if data_type == "KR" else ticker
             stock = yf.Ticker(yf_ticker)
             df = stock.history(
@@ -246,14 +325,15 @@ with st.spinner("데이터 불러오는 중..."):
                 df.index = df.index.tz_localize(None)
 
         else:
-            # 일봉 이상: FinanceDataReader만 사용
+            # 일봉 이상: FinanceDataReader (2000년부터 전체)
             start = datetime(2000, 1, 1)
             df = fdr.DataReader(ticker, start, datetime.today())
 
             resample_rule = RESAMPLE_MAP.get(candle_label)
-            if resample_rule:
+            if resample_rule and not df.empty:
                 df = df.resample(resample_rule).agg({
-                    'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'
+                    'Open':'first','High':'max',
+                    'Low':'min','Close':'last','Volume':'sum'
                 }).dropna()
 
     except Exception as e:
@@ -275,9 +355,11 @@ else:
     col2.metric("기간 최고가", fmt(df['High'].max(), currency))
     col3.metric("기간 최저가", fmt(df['Low'].min(),  currency))
 
+    # 캔들 차트 (상승: 빨간색, 하락: 파란색)
     fig = go.Figure(go.Candlestick(
         x=df.index,
-        open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        open=df['Open'], high=df['High'],
+        low=df['Low'],   close=df['Close'],
         increasing=dict(line=dict(color='red'),  fillcolor='red'),
         decreasing=dict(line=dict(color='blue'), fillcolor='blue'),
     ))
@@ -292,8 +374,12 @@ else:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    colors = ['red' if c >= o else 'blue' for c, o in zip(df['Close'], df['Open'])]
-    fig2 = go.Figure(go.Bar(x=df.index, y=df['Volume'], marker_color=colors))
+    # 거래량 차트 (상승일: 빨간색, 하락일: 파란색)
+    colors = ['red' if c >= o else 'blue'
+              for c, o in zip(df['Close'], df['Open'])]
+    fig2 = go.Figure(go.Bar(
+        x=df.index, y=df['Volume'], marker_color=colors
+    ))
     fig2.update_layout(title="거래량", template="plotly_dark")
     st.plotly_chart(fig2, use_container_width=True)
 
@@ -324,5 +410,6 @@ else:
         except:
             return ''
 
-    styled = dd_df.style.applymap(color_drawdown, subset=["최고점 대비 하락률"])
+    # pandas 신버전: applymap → map 으로 변경됨
+    styled = dd_df.style.map(color_drawdown, subset=["최고점 대비 하락률"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
