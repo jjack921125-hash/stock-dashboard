@@ -5,108 +5,466 @@ import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime
 
-st.set_page_config(page_title="통합 금융 대시보드", page_icon="📈", layout="wide")
+st.set_page_config(page_title="주식/코인 대시보드", page_icon="📈", layout="wide")
+st.title("📈 주식/코인 대시보드")
 
 # ───────────────────────────────────────────
-# 1. 초기 설정
+# 영구 저장 함수
 # ───────────────────────────────────────────
 SAVE_FILE = "data.json"
 
-# 코인 티커 형식을 yfinance에 맞게 변경 (BTC/USDT -> BTC-USD)
-DEFAULT_TICKERS = {
-    "S&P500": {"JPMorgan": "JPM", "Visa": "V", "ExxonMobil": "XOM"},
-    "나스닥": {"Apple": "AAPL", "Microsoft": "MSFT", "NVIDIA": "NVDA"},
-    "코스피": {"삼성전자": "005930", "SK하이닉스": "000660"},
-    "코인": {"Bitcoin": "BTC-USD", "Ethereum": "ETH-USD", "Solana": "SOL-USD", "XRP": "XRP-USD"},
-}
-
-if "tickers" not in st.session_state:
+def load_data():
     if os.path.exists(SAVE_FILE):
         with open(SAVE_FILE, "r", encoding="utf-8") as f:
-            st.session_state.tickers = json.load(f)
-    else:
-        st.session_state.tickers = DEFAULT_TICKERS.copy()
+            return json.load(f)
+    return DEFAULT_TICKERS.copy()
+
+def save_data(data):
+    with open(SAVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ───────────────────────────────────────────
-# 2. 데이터 수집 함수 (우회 전략 반영)
+# 기본 종목
 # ───────────────────────────────────────────
+DEFAULT_TICKERS = {
+    "S&P500": {
+        "JPMorgan":        "JPM",
+        "Berkshire":       "BRK-B",
+        "Eli Lilly":       "LLY",
+        "Visa":            "V",
+        "ExxonMobil":      "XOM",
+        "UnitedHealth":    "UNH",
+        "Johnson&Johnson": "JNJ",
+        "Mastercard":      "MA",
+        "Procter&Gamble":  "PG",
+        "Home Depot":      "HD",
+    },
+    "나스닥": {
+        "Apple":           "AAPL",
+        "Microsoft":       "MSFT",
+        "NVIDIA":          "NVDA",
+        "Amazon":          "AMZN",
+        "Alphabet":        "GOOGL",
+        "Meta":            "META",
+        "Broadcom":        "AVGO",
+        "Tesla":           "TSLA",
+        "Costco":          "COST",
+        "Netflix":         "NFLX",
+    },
+    "코스피": {
+        "삼성전자":         "005930",
+        "SK하이닉스":       "000660",
+        "삼성바이오로직스": "207940",
+        "LG에너지솔루션":   "373220",
+        "현대차":           "005380",
+        "셀트리온":         "068270",
+        "기아":             "000270",
+        "KB금융":           "105560",
+        "신한지주":         "055550",
+        "삼성물산":         "028260",
+    },
+    "코스닥": {
+        "에코프로비엠":     "247540",
+        "HLB":             "028300",
+        "에코프로":         "086520",
+        "알테오젠":         "196170",
+        "셀트리온제약":     "068760",
+        "리가켐바이오":     "141080",
+        "클래시스":         "214150",
+        "휴젤":             "145020",
+        "HPSP":            "403870",
+        "삼천당제약":       "000250",
+    },
+    # 업비트 티커 형식: "BTC", "ETH" 등
+    # 업비트는 원화(KRW) 마켓 기준
+    "코인": {
+        "Bitcoin":   "BTC",
+        "Ethereum":  "ETH",
+        "BNB":       "BNB",
+        "Solana":    "SOL",
+        "XRP":       "XRP",
+        "Dogecoin":  "DOGE",
+        "Cardano":   "ADA",
+        "Avalanche": "AVAX",
+        "Chainlink": "LINK",
+        "Polkadot":  "DOT",
+    },
+}
 
-@st.cache_data(ttl=300)
-def get_combined_data(ticker, interval_label, market_type):
+# ───────────────────────────────────────────
+# 시장별 설정
+# 코인은 업비트 원화 마켓이라 KRW
+# ───────────────────────────────────────────
+MARKET_CONFIG = {
+    "S&P500": {"currency": "USD", "data_type": "US"},
+    "나스닥":  {"currency": "USD", "data_type": "US"},
+    "코스피":  {"currency": "KRW", "data_type": "KR"},
+    "코스닥":  {"currency": "KRW", "data_type": "KR"},
+    "코인":    {"currency": "KRW", "data_type": "COIN"},
+}
+
+# ───────────────────────────────────────────
+# 캔들 단위 설정
+# 업비트 캔들 단위: minutes/1, minutes/3, minutes/5,
+#                  minutes/15, minutes/30, minutes/60,
+#                  minutes/240, days, weeks, months
+# ───────────────────────────────────────────
+CANDLE_OPTIONS = {
+    "1분":   {"type": "minute", "upbit": "minutes/1",   "yf_interval": "1m",  "yf_period": "7d"},
+    "3분":   {"type": "minute", "upbit": "minutes/3",   "yf_interval": "3m",  "yf_period": "7d"},
+    "5분":   {"type": "minute", "upbit": "minutes/5",   "yf_interval": "5m",  "yf_period": "7d"},
+    "15분":  {"type": "minute", "upbit": "minutes/15",  "yf_interval": "15m", "yf_period": "60d"},
+    "30분":  {"type": "minute", "upbit": "minutes/30",  "yf_interval": "30m", "yf_period": "60d"},
+    "60분":  {"type": "minute", "upbit": "minutes/60",  "yf_interval": "60m", "yf_period": "60d"},
+    "4시간": {"type": "minute", "upbit": "minutes/240", "yf_interval": "4h",  "yf_period": "60d"},
+    "1일":   {"type": "daily",  "upbit": "days"},
+    "1주":   {"type": "weekly", "upbit": "weeks"},
+    "1달":   {"type": "monthly","upbit": "months"},
+    "1년":   {"type": "yearly", "upbit": "months"},
+}
+
+RESAMPLE_MAP = {
+    "1주": "W",
+    "1달": "ME",
+    "1년": "YE",
+}
+
+# ───────────────────────────────────────────
+# 앱 시작 시 저장된 데이터 불러오기
+# ───────────────────────────────────────────
+if "tickers" not in st.session_state:
+    st.session_state.tickers = load_data()
+
+for k in DEFAULT_TICKERS:
+    if k not in st.session_state.tickers:
+        st.session_state.tickers[k] = DEFAULT_TICKERS[k].copy()
+
+# ───────────────────────────────────────────
+# 가격 포맷 함수
+# ───────────────────────────────────────────
+def fmt(price, currency):
+    if currency == "KRW":
+        return f"₩{price:,.0f}"
+    return f"${price:,.4f}" if price < 1 else f"${price:,.2f}"
+
+# ───────────────────────────────────────────
+# 업비트 코인 캔들 데이터 가져오기
+# 업비트 REST API: https://api.upbit.com
+# ───────────────────────────────────────────
+@st.cache_data(ttl=60)
+def get_upbit_candles(ticker: str, candle_type: str, count: int = 200):
+    """
+    업비트 API로 캔들 데이터를 가져옵니다.
+
+    ticker: "BTC", "ETH" 등
+    candle_type: "minutes/1", "days", "weeks", "months" 등
+    count: 가져올 캔들 개수 (최대 200)
+
+    업비트 마켓 코드: KRW-BTC 형식
+    """
     try:
-        # 1. 코인인 경우 (yfinance 사용 - 바이낸스 차단 우회)
-        if "코인" in market_type:
-            int_map = {"1분":"1m", "5분":"5m", "15분":"15m", "1시간":"1h", "1일":"1d"}
-            # 코인은 24시간 돌아가므로 period를 넉넉히 잡음
-            df = yf.download(ticker, period="7d" if "분" in interval_label else "max", 
-                             interval=int_map.get(interval_label, "1d"), progress=False)
-        
-        # 2. 주식 분봉/시간봉 (yfinance)
-        elif "분" in interval_label or "시간" in interval_label:
-            yf_ticker = f"{ticker}.KS" if market_type == "코스피" else f"{ticker}.KQ" if market_type == "코스닥" else ticker
-            int_map = {"1분":"1m", "5분":"5m", "15분":"15m", "1시간":"1h"}
-            df = yf.download(yf_ticker, period="5d", interval=int_map.get(interval_label, "5m"), progress=False)
-        
-        # 3. 주식 일봉 이상 (FinanceDataReader)
-        else:
-            df = fdr.DataReader(ticker, '2020-01-01')
-            
-        if df.empty:
+        market = f"KRW-{ticker}"  # 원화 마켓 코드
+        url = f"https://api.upbit.com/v1/candles/{candle_type}"
+        headers = {"Accept": "application/json"}
+        params = {
+            "market": market,
+            "count": count,  # 한 번에 최대 200개
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+
+        if resp.status_code != 200:
             return pd.DataFrame()
-            
-        # 데이터프레임 컬럼이 MultiIndex로 오는 경우 처리 (yfinance 최신버전 대응)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
+
+        data = resp.json()
+        if not isinstance(data, list) or len(data) == 0:
+            return pd.DataFrame()
+
+        # 업비트 응답 컬럼명 → 우리 형식으로 변환
+        df = pd.DataFrame(data)
+        df = df[['candle_date_time_kst', 'opening_price', 'high_price', 'low_price', 'trade_price', 'candle_acc_trade_volume']]
+        df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+
+        # 업비트는 최신순으로 오기 때문에 날짜 오름차순으로 정렬
+        df = df.sort_index()
         return df
+
     except Exception as e:
-        st.error(f"데이터 로드 에러: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def get_upbit_all_days(ticker: str):
+    """
+    업비트 일봉 전체 데이터를 가져옵니다.
+    업비트는 한 번에 200개까지만 가져올 수 있어서
+    여러 번 호출해서 합쳐요.
+    """
+    try:
+        market = f"KRW-{ticker}"
+        url = "https://api.upbit.com/v1/candles/days"
+        headers = {"Accept": "application/json"}
+        all_data = []
+        to_param = None  # 이 날짜 이전 데이터를 가져와요
+
+        # 최대 10번 반복 = 최대 2000일치 (약 5~6년)
+        for _ in range(10):
+            params = {"market": market, "count": 200}
+            if to_param:
+                params["to"] = to_param  # 특정 날짜 이전 데이터 요청
+
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            if resp.status_code != 200:
+                break
+
+            data = resp.json()
+            if not data:
+                break
+
+            all_data.extend(data)
+            # 가장 오래된 날짜를 다음 요청의 기준으로 설정
+            to_param = data[-1]['candle_date_time_utc']
+
+        if not all_data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_data)
+        df = df[['candle_date_time_kst', 'opening_price', 'high_price', 'low_price', 'trade_price', 'candle_acc_trade_volume']]
+        df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        df = df.sort_index()
+        return df
+
+    except Exception as e:
         return pd.DataFrame()
 
 # ───────────────────────────────────────────
-# 3. UI 및 출력
+# 최고점 대비 하락률 계산
+# ───────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def get_drawdown_table(ticker_dict: dict, data_type: str, currency: str):
+    """
+    목록의 모든 종목에 대해
+    역대 최고가 대비 현재가 하락률을 계산합니다.
+    """
+    rows = []
+    for name, ticker in ticker_dict.items():
+        try:
+            if data_type == "COIN":
+                df = get_upbit_all_days(ticker)
+            else:
+                start = datetime(2000, 1, 1)
+                df = fdr.DataReader(ticker, start, datetime.today())
+
+            if df.empty:
+                continue
+
+            current       = df['Close'].iloc[-1]
+            all_time_high = df['High'].max()
+            drawdown      = (current - all_time_high) / all_time_high * 100
+
+            rows.append({
+                "종목":               name,
+                "현재가":             fmt(current, currency),
+                "역대 최고가":        fmt(all_time_high, currency),
+                "최고점 대비 하락률": f"{drawdown:.2f}%",
+                "_drawdown":          drawdown,
+            })
+        except:
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    df_result = pd.DataFrame(rows)
+    df_result = df_result.sort_values("_drawdown").drop(columns=["_drawdown"])
+    df_result.reset_index(drop=True, inplace=True)
+    return df_result
+
+# ───────────────────────────────────────────
+# 사이드바
 # ───────────────────────────────────────────
 st.sidebar.title("⚙️ 설정")
-market = st.sidebar.selectbox("시장 선택", list(st.session_state.tickers.keys()))
+market    = st.sidebar.selectbox("시장 선택", list(MARKET_CONFIG.keys()))
+config    = MARKET_CONFIG[market]
+currency  = config["currency"]
+data_type = config["data_type"]
 ticker_dict = st.session_state.tickers[market]
-selected_name = st.sidebar.selectbox("종목 선택", list(ticker_dict.keys()))
-selected_ticker = ticker_dict[selected_name]
 
-candle_op = ["1분", "5분", "15분", "1시간", "1일"]
-interval = st.sidebar.selectbox("캔들 단위", candle_op, index=4)
+selected     = st.sidebar.selectbox("종목 선택", list(ticker_dict.keys()))
+ticker       = ticker_dict[selected]
+candle_label = st.sidebar.selectbox("캔들 단위", list(CANDLE_OPTIONS.keys()), index=7)
+candle_info  = CANDLE_OPTIONS[candle_label]
 
-df = get_combined_data(selected_ticker, interval, market)
+# ───────────────────────────────────────────
+# 종목 추가
+# ───────────────────────────────────────────
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ➕ 종목 추가")
 
-if not df.empty:
-    st.title(f"📈 {selected_name} ({selected_ticker})")
-    
-    # 지표 계산
-    curr_price = float(df['Close'].iloc[-1])
-    prev_price = float(df['Close'].iloc[-2]) if len(df) > 1 else curr_price
-    change_pct = (curr_price - prev_price) / prev_price * 100
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("현재가", f"{curr_price:,.2f}", f"{change_pct:+.2f}%")
-    c2.metric("기간 최고가", f"{df['High'].max():,.2f}")
-    c3.metric("기간 최저가", f"{df['Low'].min():,.2f}")
+if data_type == "KR":
+    new_name   = st.sidebar.text_input("종목명", placeholder="예: LG전자")
+    new_ticker = st.sidebar.text_input("종목코드 (6자리)", placeholder="예: 066570")
+elif data_type == "COIN":
+    new_name   = st.sidebar.text_input("코인명", placeholder="예: Shiba Inu")
+    new_ticker = st.sidebar.text_input("업비트 티커", placeholder="예: SHIB")
+else:
+    new_name   = st.sidebar.text_input("종목명", placeholder="예: AMD")
+    new_ticker = st.sidebar.text_input("티커", placeholder="예: AMD")
 
-    # 차트
-    fig = go.Figure(data=[go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        increasing_line_color='red', decreasing_line_color='blue'
-    )])
-    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
+if st.sidebar.button("➕ 추가"):
+    if new_name and new_ticker:
+        st.session_state.tickers[market][new_name] = new_ticker.strip().upper()
+        save_data(st.session_state.tickers)
+        st.sidebar.success(f"✅ {new_name} 추가됨!")
+        st.rerun()
+    else:
+        st.sidebar.error("종목명과 코드를 모두 입력해주세요!")
+
+# ───────────────────────────────────────────
+# 종목 삭제
+# ───────────────────────────────────────────
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🗑️ 종목 삭제")
+delete_target = st.sidebar.selectbox(
+    "삭제할 종목", list(ticker_dict.keys()), key="delete"
+)
+
+if st.sidebar.button("🗑️ 삭제"):
+    del st.session_state.tickers[market][delete_target]
+    save_data(st.session_state.tickers)
+    st.sidebar.success(f"🗑️ {delete_target} 삭제됨!")
+    st.rerun()
+
+# ───────────────────────────────────────────
+# 데이터 불러오기
+# ───────────────────────────────────────────
+with st.spinner("데이터 불러오는 중..."):
+    df = pd.DataFrame()
+    try:
+        if data_type == "COIN":
+            candle_type = candle_info["upbit"]
+
+            if candle_info["type"] == "daily":
+                # 일봉: 전체 데이터
+                df = get_upbit_all_days(ticker)
+
+            elif candle_info["type"] in ["weekly", "monthly"]:
+                # 주봉/월봉: 업비트 직접 지원
+                df = get_upbit_candles(ticker, candle_type, count=200)
+
+            elif candle_info["type"] == "yearly":
+                # 년봉: 월봉 데이터를 연단위로 리샘플링
+                df = get_upbit_candles(ticker, "months", count=200)
+                if not df.empty:
+                    df = df.resample("YE").agg({
+                        'Open': 'first', 'High': 'max',
+                        'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                    }).dropna()
+            else:
+                # 분봉: 업비트 직접 지원
+                df = get_upbit_candles(ticker, candle_type, count=200)
+
+        elif candle_info["type"] == "minute":
+            # 주식 분봉/시간봉: yfinance
+            yf_ticker = f"{ticker}.KS" if data_type == "KR" else ticker
+            stock = yf.Ticker(yf_ticker)
+            df = stock.history(
+                period=candle_info["yf_period"],
+                interval=candle_info["yf_interval"]
+            )
+            if not df.empty:
+                df.index = df.index.tz_localize(None)
+
+        else:
+            # 주식 일봉 이상: FinanceDataReader
+            start = datetime(2000, 1, 1)
+            df = fdr.DataReader(ticker, start, datetime.today())
+
+            resample_rule = RESAMPLE_MAP.get(candle_label)
+            if resample_rule and not df.empty:
+                df = df.resample(resample_rule).agg({
+                    'Open': 'first', 'High': 'max',
+                    'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                }).dropna()
+
+    except Exception as e:
+        st.error(f"데이터 오류: {e}")
+
+# ───────────────────────────────────────────
+# 차트 표시
+# ───────────────────────────────────────────
+if df.empty:
+    st.error("데이터를 불러올 수 없습니다.")
+else:
+    col1, col2, col3 = st.columns(3)
+    price      = df['Close'].iloc[-1]
+    prev       = df['Close'].iloc[-2] if len(df) > 1 else price
+    change_pct = (price - prev) / prev * 100 if prev else 0
+
+    col1.metric("현재가",      fmt(price, currency), f"{change_pct:+.2f}%")
+    col2.metric("기간 최고가", fmt(df['High'].max(), currency))
+    col3.metric("기간 최저가", fmt(df['Low'].min(),  currency))
+
+    # 캔들 차트 (상승: 빨간색, 하락: 파란색)
+    fig = go.Figure(go.Candlestick(
+        x=df.index,
+        open=df['Open'], high=df['High'],
+        low=df['Low'],   close=df['Close'],
+        increasing=dict(line=dict(color='red'),  fillcolor='red'),
+        decreasing=dict(line=dict(color='blue'), fillcolor='blue'),
+    ))
+    fig.update_layout(
+        title=f"{selected} — {candle_label}봉 차트",
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        yaxis=dict(
+            tickprefix="₩" if currency == "KRW" else "$",
+            tickformat=",.0f" if currency == "KRW" else ",.2f",
+        )
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 하락률(Drawdown) 섹션 - 에러 방지 로직 포함
-    st.markdown("---")
-    st.subheader("📉 전고점 대비 하락률 (Drawdown)")
-    all_time_high = df['High'].max()
-    dd = (curr_price - all_time_high) / all_time_high * 100
-    st.write(f"현재 선택된 기간 내 최고점({all_time_high:,.2f}) 대비 **{dd:.2f}%** 상태입니다.")
+    # 거래량 차트 (상승일: 빨간색, 하락일: 파란색)
+    colors = ['red' if c >= o else 'blue'
+              for c, o in zip(df['Close'], df['Open'])]
+    fig2 = go.Figure(go.Bar(
+        x=df.index, y=df['Volume'], marker_color=colors
+    ))
+    fig2.update_layout(title="거래량", template="plotly_dark")
+    st.plotly_chart(fig2, use_container_width=True)
 
+# ───────────────────────────────────────────
+# 최고점 대비 하락률 테이블
+# ───────────────────────────────────────────
+st.markdown("---")
+st.subheader(f"📉 {market} — 최고점 대비 현재 하락률")
+st.caption("일봉 기준 | 역대 최고가 대비 현재가 하락률 | 하락률 높은 순")
+
+with st.spinner("하락률 계산 중..."):
+    dd_df = get_drawdown_table(dict(ticker_dict), data_type, currency)
+
+if dd_df.empty:
+    st.warning("하락률 데이터를 불러올 수 없습니다.")
 else:
-    st.error("데이터를 가져오지 못했습니다. 시장이나 티커 설정을 확인해주세요.")
-    st.info("💡 팁: 코인의 경우 BTC-USD 처럼 하이픈(-) 형식을 사용해 보세요.")
+    def color_drawdown(val):
+        try:
+            v = float(val.replace('%', ''))
+            if v < -50:
+                return 'color: #0040ff; font-weight: bold'
+            elif v < -30:
+                return 'color: #4488ff'
+            elif v < -10:
+                return 'color: #88aaff'
+            else:
+                return 'color: #aaaaaa'
+        except:
+            return ''
+
+    styled = dd_df.style.map(color_drawdown, subset=["최고점 대비 하락률"])
+    st.dataframe(styled, use_container_width=True, hide_index=True)
