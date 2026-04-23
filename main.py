@@ -1,5 +1,3 @@
-pip install -U yfinance finance-datareader pandas
-
 import streamlit as st
 import FinanceDataReader as fdr
 import yfinance as yf
