@@ -5,98 +5,79 @@ import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
-from datetime import datetime
 
 st.set_page_config(page_title="주식/코인 대시보드", page_icon="📈", layout="wide")
 st.title("📈 주식/코인 대시보드")
 
-# ───────────────────────────────────────────
-# 데이터 저장 및 로드
-# ───────────────────────────────────────────
+# 1. 데이터 저장 로직 (심플하게 유지)
 SAVE_FILE = "data.json"
 DEFAULT_TICKERS = {
-    "S&P500": {"JPMorgan": "JPM", "Berkshire": "BRK-B", "Eli Lilly": "LLY"},
-    "나스닥": {"Apple": "AAPL", "Microsoft": "MSFT", "NVIDIA": "NVDA"},
-    "코스피": {"삼성전자": "005930", "SK하이닉스": "000660"},
-    "코스닥": {"에코프로비엠": "247540", "HLB": "028300"},
-    "코인": {"Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL", "XRP": "XRP"}
+    "코인": {"Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL"},
+    "나스닥": {"NVIDIA": "NVDA", "Apple": "AAPL"},
+    "코스피": {"삼성전자": "005930"}
 }
 
 if "tickers" not in st.session_state:
-    if os.path.exists(SAVE_FILE):
-        with open(SAVE_FILE, "r", encoding="utf-8") as f:
-            st.session_state.tickers = json.load(f)
-    else:
-        st.session_state.tickers = DEFAULT_TICKERS.copy()
+    st.session_state.tickers = DEFAULT_TICKERS.copy()
 
-# ───────────────────────────────────────────
-# [핵심 수정] 안정적인 데이터 추출 함수
-# ───────────────────────────────────────────
+# 2. [강력한 데이터 수집기] - 이 부분이 핵심입니다.
 @st.cache_data(ttl=300)
-def get_market_data(symbol, market_type):
+def get_any_data(symbol, market_type):
     try:
         if market_type == "코인":
-            # 1. 코인은 USD 티커로 다운로드
+            # 코인은 USD로 가져와야 가장 빠르고 정확함
             target = f"{symbol}-USD"
-            data = yf.download(target, start="2023-01-01", progress=False)
+            df = yf.download(target, period="1y", progress=False)
             
-            if data.empty: return pd.DataFrame()
+            if df.empty: return pd.DataFrame()
 
-            # 2. [에러 해결 포인트] pandas 표준 방식으로 MultiIndex 체크
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.get_level_values(0)
+            # [핵심] MultiIndex 층을 완전히 깨버리고 단일 층으로 강제 변환
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
             
-            # 3. 환율 데이터 가져오기 및 원화 환산
+            # 환율 계산 (최신 환율 정보 가져오기)
             fx = yf.download("USDKRW=X", period="1d", progress=False)
             if isinstance(fx.columns, pd.MultiIndex):
                 fx.columns = fx.columns.get_level_values(0)
-                
-            rate = float(fx['Close'].iloc[-1])
             
-            # 필요한 컬럼만 추출하여 환율 곱하기
-            res_df = data[['Open', 'High', 'Low', 'Close']].copy()
-            for col in res_df.columns:
-                res_df[col] = res_df[col] * rate
-            return res_df
+            # 환율이 있으면 곱하고, 없으면 대략적인 1380원 적용
+            rate = float(fx['Close'].iloc[-1]) if not fx.empty else 1380.0
+            
+            # 필요한 가격 데이터만 복사해서 환율 곱하기
+            final_df = df[['Open', 'High', 'Low', 'Close']].copy()
+            return final_df * rate
         else:
-            # 주식은 기존 fdr 방식 유지
-            df = fdr.DataReader(symbol, "2023-01-01")
-            return df
-    except Exception as e:
+            # 주식은 fdr 사용
+            return fdr.DataReader(symbol, "2024-01-01")
+    except:
         return pd.DataFrame()
 
-# ───────────────────────────────────────────
-# 사이드바 및 메인 로직
-# ───────────────────────────────────────────
+# 3. 사이드바 구성
 st.sidebar.title("⚙️ 설정")
 market = st.sidebar.selectbox("시장 선택", list(st.session_state.tickers.keys()))
 selected_name = st.sidebar.selectbox("종목 선택", list(st.session_state.tickers[market].keys()))
 ticker = st.session_state.tickers[market][selected_name]
 
-with st.spinner("데이터 로딩 중..."):
-    df = get_market_data(ticker, market)
+# 4. 메인 화면 출력
+with st.spinner("데이터를 낚아채는 중..."):
+    df = get_any_data(ticker, market)
 
 if df.empty:
-    st.error(f"❌ '{selected_name}' 데이터를 불러오지 못했습니다.")
+    st.error(f"❌ '{selected_name}' 데이터를 불러오지 못했습니다. 잠시 후 '시장 선택'을 다시 눌러주세요.")
 else:
-    # 지표 계산 (안정성을 위해 float 변환)
-    curr_price = float(df['Close'].iloc[-1])
-    prev_price = float(df['Close'].iloc[-2])
-    pct_change = ((curr_price - prev_price) / prev_price) * 100
+    # 상단 지표
+    curr_p = float(df['Close'].iloc[-1])
+    high_p = float(df['High'].max())
     
-    col1, col2, col3 = st.columns(3)
-    unit = "₩" if market in ["코스피", "코스닥", "코인"] else "$"
-    
-    col1.metric("현재가", f"{unit}{curr_price:,.0f}" if unit == "₩" else f"{unit}{curr_price:,.2f}", f"{pct_change:+.2f}%")
-    col2.metric("기간 최고가", f"{unit}{df['High'].max():,.0f}" if unit == "₩" else f"{unit}{df['High'].max():,.2f}")
-    col3.metric("전고점 대비", f"{((curr_price/df['High'].max())-1)*100:.2f}%")
+    col1, col2 = st.columns(2)
+    unit = "₩" if market in ["코스피", "코인"] else "$"
+    col1.metric("현재가", f"{unit}{curr_p:,.0f}" if unit == "₩" else f"{unit}{curr_p:,.2f}")
+    col2.metric("최고점 대비", f"{((curr_p/high_p)-1)*100:.2f}%")
 
-    # 차트 출력
+    # 캔들 차트
     fig = go.Figure(data=[go.Candlestick(
-        x=df.index,
-        open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'],
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         increasing_line_color='red', decreasing_line_color='blue'
     )])
-    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=600)
+    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
     st.plotly_chart(fig, use_container_width=True)
