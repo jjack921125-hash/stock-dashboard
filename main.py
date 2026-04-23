@@ -14,7 +14,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📈 2026 글로벌 자산 터미널 (TOP 20 확대판)")
+st.title("📈 글로벌 자산 시세 (TOP 20)")
 
 # 2. 2026년 4월 기준 시총 TOP 20 종목 리스트
 DEFAULT_TICKERS = {
