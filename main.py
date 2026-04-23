@@ -5,122 +5,143 @@ import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
+from datetime import datetime
 
-# 1. 기본 설정 및 데이터 로드 (간결화)
-st.set_page_config(page_title="주식/코인 대시보드", layout="wide")
-st.title("📈 주식/코인 대시보드")
+# 1. 페이지 설정
+st.set_page_config(page_title="2026 Global Asset Dashboard", layout="wide")
+st.title("📈 2026 글로벌 자산 대시보드 (4월 업데이트)")
 
-SAVE_FILE = "data_v2.json"
+SAVE_FILE = "data_2026.json"
+
+# 2. 2026년 4월 시총 기준 종목 리스트 (나스닥/S&P500 중복 제거 및 시총순)
+DEFAULT_TICKERS = {
+    "코인": {
+        "Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL", "XRP": "XRP", "BNB": "BNB",
+        "Dogecoin": "DOGE", "Cardano": "ADA", "Avalanche": "AVAX", "Tron": "TRX", "Chainlink": "LINK",
+        "Sui": "SUI", "Aptos": "APT", "Polkadot": "DOT", "Polygon": "MATIC", "Toncoin": "TON",
+        "Near": "NEAR", "Pepe": "PEPE", "Litecoin": "LTC", "Bitcoin Cash": "BCH", "Uniswap": "UNI"
+    },
+    "나스닥": {
+        "NVIDIA": "NVDA", "Apple": "AAPL", "Microsoft": "MSFT", "Amazon": "AMZN", "Alphabet(A)": "GOOGL",
+        "Meta": "META", "Tesla": "TSLA", "Broadcom": "AVGO", "ASML": "ASML", "Costco": "COST",
+        "Netflix": "NFLX", "AMD": "AMD", "Adobe": "ADBE", "Qualcomm": "QCOM", "Arm": "ARM",
+        "Intel": "INTC", "Applied Materials": "AMAT", "Intuitive Surgical": "ISRG", "LRCX": "LRCX", "Micron": "MU"
+    },
+    "S&P500": {
+        "Berkshire": "BRK-B", "Eli Lilly": "LLY", "JPMorgan": "JPM", "Visa": "V", "UnitedHealth": "UNH",
+        "Exxon Mobil": "XOM", "Mastercard": "MA", "Johnson&Johnson": "JNJ", "Procter&Gamble": "PG", "Home Depot": "HD",
+        "AbbVie": "ABBV", "Chevron": "CVX", "Merck": "MRK", "Bank of America": "BAC", "Coca-Cola": "KO",
+        "Salesforce": "CRM", "Walmart": "WMT", "Oracle": "ORCL", "Accenture": "ACN", "McDonald's": "MCD"
+    },
+    "코스피": {
+        "삼성전자": "005930", "SK하이닉스": "000660", "LG엔솔": "373220", "삼성바이오": "207940", "현대차": "005380",
+        "기아": "000270", "셀트리온": "068270", "KB금융": "105560", "NAVER": "035420", "신한지주": "055550",
+        "POSCO홀딩스": "005490", "현대모비스": "012330", "삼성물산": "028260", "LG화학": "051910", "하나금융": "086790",
+        "삼성SDI": "006400", "메리츠금융": "138040", "카카오": "035720", "삼성생명": "032830", "포스코퓨처엠": "003670"
+    },
+    "코스닥": {
+        "에코프로비엠": "247540", "에코프로": "086520", "알테오젠": "196170", "HLB": "028300", "엔켐": "348370",
+        "HPSP": "403870", "리노공업": "058470", "레인보우로보틱스": "277810", "셀트리온제약": "068760", "클래시스": "214150",
+        "삼천당제약": "000250", "휴젤": "145020", "이오테크닉스": "039030", "솔브레인": "357780", "동진쎄미켐": "005290",
+        "실리콘투": "257720", "펄어비스": "263750", "카카오게임즈": "293490", "주성엔지니어링": "036930", "파마리서치": "214450"
+    }
+}
+
 if "tickers" not in st.session_state:
     if os.path.exists(SAVE_FILE):
         with open(SAVE_FILE, "r", encoding="utf-8") as f:
             st.session_state.tickers = json.load(f)
     else:
-        st.session_state.tickers = {
-            "코인": {"Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL"},
-            "해외주식": {"NVIDIA": "NVDA", "Apple": "AAPL", "Tesla": "TSLA"},
-            "국내주식": {"삼성전자": "005930", "SK하이닉스": "000660"}
-        }
+        st.session_state.tickers = DEFAULT_TICKERS.copy()
 
-def save_data():
-    with open(SAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(st.session_state.tickers, f, ensure_ascii=False, indent=2)
-
-# 2. [검증된] 핵심 데이터 수집기
+# 3. 데이터 수집 엔진
 @st.cache_data(ttl=300)
-def get_clean_data(symbol, category):
+def fetch_comprehensive_data(symbol, category, interval="1일"):
     try:
-        if category == "국내주식":
-            # 한국 주식은 fdr이 가장 깔끔함
-            df = fdr.DataReader(symbol, "2024-01-01")
-        else:
-            # 코인과 해외주식은 성공했던 yfinance 로직 적용
-            target = f"{symbol}-USD" if category == "코인" else symbol
-            df = yf.download(target, period="1y", progress=False)
-            
-            if df.empty: return pd.DataFrame()
-
-            # MultiIndex 평탄화 (가장 중요한 부분)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            
-            # 코인이면 환율 적용
-            if category == "코인":
-                fx = yf.download("USDKRW=X", period="1d", progress=False)
-                if isinstance(fx.columns, pd.MultiIndex):
-                    fx.columns = fx.columns.get_level_values(0)
-                rate = float(fx['Close'].iloc[-1]) if not fx.empty else 1380.0
-                for col in ['Open', 'High', 'Low', 'Close']:
-                    df[col] = df[col] * rate
+        int_map = {"1시간": "1h", "4시간": "1h", "1일": "1d", "1주": "1wk", "1달": "1mo"}
+        yf_int = int_map.get(interval, "1d")
         
-        return df.dropna()
+        if category in ["코스피", "코스닥"]:
+            # 국내주식 전체 기간 (fdr 사용)
+            df = fdr.DataReader(symbol, "1970-01-01")
+            if interval == "1주": df = df.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'})
+            elif interval == "1달": df = df.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'})
+            return df.dropna()
+        else:
+            # 코인/해외주식 전체 기간 (yf 사용)
+            target = f"{symbol}-USD" if category == "코인" else symbol
+            df = yf.download(target, period="max", interval=yf_int, progress=False)
+            if df.empty: return pd.DataFrame()
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            
+            if interval == "4시간":
+                df = df.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'})
+            return df.dropna()
     except:
         return pd.DataFrame()
 
-# 3. 사이드바 (기능 압축)
-st.sidebar.header("⚙️ 컨트롤러")
-category = st.sidebar.selectbox("카테고리", list(st.session_state.tickers.keys()))
-names = list(st.session_state.tickers[category].keys())
-selected_name = st.sidebar.selectbox("종목 선택", names)
+# 4. 사이드바 및 환율 설정
+st.sidebar.header("🧭 메뉴")
+category = st.sidebar.selectbox("시장", list(st.session_state.tickers.keys()))
+selected_name = st.sidebar.selectbox("종목", list(st.session_state.tickers[category].keys()))
 ticker = st.session_state.tickers[category][selected_name]
+time_frame = st.sidebar.select_slider("캔들", options=["1시간", "4시간", "1일", "1주", "1달"])
 
-# 종목 추가/삭제
-with st.sidebar.expander("➕ 종목 편집"):
-    new_n = st.text_input("이름")
-    new_t = st.text_input("티커")
-    if st.button("추가"):
-        st.session_state.tickers[category][new_n] = new_t.upper()
-        save_data()
-        st.rerun()
-    if st.button("현재 종목 삭제"):
-        if len(st.session_state.tickers[category]) > 1:
-            del st.session_state.tickers[category][selected_name]
-            save_data()
-            st.rerun()
+@st.cache_data(ttl=3600)
+def get_2026_fx():
+    fx = yf.download("USDKRW=X", period="1d", progress=False)
+    if isinstance(fx.columns, pd.MultiIndex): fx.columns = fx.columns.get_level_values(0)
+    return float(fx['Close'].iloc[-1])
 
-# 4. 메인 대시보드
-with st.spinner("데이터 동기화 중..."):
-    df = get_clean_data(ticker, category)
+# 5. 메인 레이아웃
+with st.spinner("2026년 실시간 데이터 동기화 중..."):
+    df = fetch_comprehensive_data(ticker, category, time_frame)
 
 if df.empty:
-    st.error("데이터를 가져오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.")
+    st.error("데이터 로드 실패")
 else:
-    # 지표 산출
-    curr = float(df['Close'].iloc[-1])
-    high = float(df['High'].max())
-    low = float(df['Low'].min())
-    prev = float(df['Close'].iloc[-2])
-    chg = ((curr - prev) / prev) * 100
-    mdd = ((curr / high) - 1) * 100
+    curr_p = float(df['Close'].iloc[-1])
+    high_all = float(df['High'].max())
     
-    unit = "$" if category == "해외주식" else "₩"
+    # 상단 정보창
+    c1, c2, c3 = st.columns(3)
+    if category == "코인":
+        rate = get_2026_fx()
+        c1.metric("현재가 (KRW)", f"₩{curr_p * rate:,.0f}")
+        c2.metric("현재가 (USD)", f"${curr_p:,.2f}")
+    else:
+        unit = "₩" if category in ["코스피", "코스닥"] else "$"
+        c1.metric("현재가", f"{unit}{curr_p:,.0f}" if unit=="₩" else f"{unit}{curr_p:,.2f}")
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("현재가", f"{unit}{curr:,.0f}" if unit=="₩" else f"{unit}{curr:,.2f}", f"{chg:+.2f}%")
-    col2.metric("전고점 대비", f"{mdd:.2f}%", help="최고가 대비 현재 하락률")
-    col3.metric("기간 최저가", f"{unit}{low:,.0f}" if unit=="₩" else f"{unit}{low:,.2f}")
+    c3.metric("역대 최고점 대비(MDD)", f"{((curr_p/high_all)-1)*100:.2f}%")
 
-    # 캔들 차트
+    # 캔들스틱 차트
     fig = go.Figure(data=[go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        increasing_line_color='red', decreasing_line_color='blue'
+        increasing_line_color='#FF3232', decreasing_line_color='#0064FF'
     )])
-    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
+    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=600, title=f"{selected_name} - {time_frame} 전체 차트")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 하락률 랭킹 테이블
+    # 거래량
+    fig_vol = go.Figure(go.Bar(x=df.index, y=df['Volume'], marker_color='#555555'))
+    fig_vol.update_layout(template="plotly_dark", height=200, margin=dict(t=0))
+    st.plotly_chart(fig_vol, use_container_width=True)
+
+    # 6. 카테고리 내 시총 상위 MDD 순위 (20개)
     st.markdown("---")
-    st.subheader(f"📊 {category} 하락률 순위")
+    st.subheader(f"📊 2026년 4월 {category} 시총 상위 MDD 현황")
     
-    rank_list = []
+    rank_rows = []
     for n, t in st.session_state.tickers[category].items():
-        tdf = get_clean_data(t, category)
-        if not tdf.empty:
-            tc = float(tdf['Close'].iloc[-1])
-            th = float(tdf['High'].max())
-            tmdd = ((tc / th) - 1) * 100
-            rank_list.append({"종목": n, "현재가": f"{unit}{tc:,.0f}" if unit=="₩" else f"{unit}{tc:,.2f}", "하락률": f"{tmdd:.2f}%", "sort": tmdd})
+        # 순위표는 '1일' 기준으로 고정하여 연산 속도 확보
+        rdf = fetch_comprehensive_data(t, category, "1일")
+        if not rdf.empty:
+            cp = float(rdf['Close'].iloc[-1])
+            hp = float(rdf['High'].max())
+            mdd = ((cp / hp) - 1) * 100
+            rank_rows.append({"종목명": n, "하락률": f"{mdd:.2f}%", "_val": mdd})
     
-    if rank_list:
-        rdf = pd.DataFrame(rank_list).sort_values("sort")
-        st.table(rdf.drop(columns="sort"))
+    if rank_rows:
+        res_df = pd.DataFrame(rank_rows).sort_values("_val")
+        st.dataframe(res_df.drop(columns="_val"), use_container_width=True, hide_index=True)
