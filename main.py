@@ -194,7 +194,7 @@ with st.sidebar:
 if tk_info:
     df = fetch_data(tk_info['tck'], tk_info['type'])
     if not df.empty:
-        tab1, tab2 = st.tabs(["📊 실시간 리포트", "🌋 고난의 역사"])
+        tab1, tab2 = st.tabs(["📊 실시간 정보", "🌋 고난의 역사"])
         fx_rate = get_realtime_fx()
         with tab1:
             cp = float(df['Close'].iloc[-1])
