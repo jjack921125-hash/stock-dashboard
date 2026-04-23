@@ -17,12 +17,10 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. 데이터 로드 및 2026년 4월 기준 시총 상위 20 종목 셋팅
+# 2. 데이터 엔진 및 2026년 4월 기준 데이터
 def load_data():
-    if os.path.exists(DB_FILE): 
-        os.remove(DB_FILE)
     default_data = {
-        "코인 (스테이블 제외)": {
+        "코인 (Top 20)": {
             "Bitcoin": {"tck": "BTC", "type": "코인"}, "Ethereum": {"tck": "ETH", "type": "코인"},
             "Solana": {"tck": "SOL", "type": "코인"}, "XRP": {"tck": "XRP", "type": "코인"},
             "BNB": {"tck": "BNB", "type": "코인"}, "Dogecoin": {"tck": "DOGE", "type": "코인"},
@@ -46,7 +44,7 @@ def load_data():
             "Qualcomm": {"tck": "QCOM", "type": "주식"}, "Cisco": {"tck": "CSCO", "type": "주식"},
             "Intuit": {"tck": "INTU", "type": "주식"}, "Amgen": {"tck": "AMGN", "type": "주식"}
         },
-        "S&P 500 (나스닥 중복제외)": {
+        "S&P 500 (나스닥 제외 20위)": {
             "Berkshire Hathaway": {"tck": "BRK-B", "type": "주식"}, "Eli Lilly": {"tck": "LLY", "type": "주식"},
             "JPMorgan Chase": {"tck": "JPM", "type": "주식"}, "UnitedHealth": {"tck": "UNH", "type": "주식"},
             "Visa": {"tck": "V", "type": "주식"}, "Exxon Mobil": {"tck": "XOM", "type": "주식"},
@@ -71,11 +69,11 @@ def load_data():
             "삼성물산": {"tck": "028260", "type": "주식"}, "LG전자": {"tck": "066570", "type": "주식"}
         },
         "코스닥": {
+            "알테오젠": {"tck": "191170", "type": "주식"}, "HLB": {"tck": "028300", "type": "주식"},
             "에코프로비엠": {"tck": "247540", "type": "주식"}, "에코프로": {"tck": "086520", "type": "주식"},
-            "HLB": {"tck": "028300", "type": "주식"}, "알테오젠": {"tck": "191170", "type": "주식"},
             "엔켐": {"tck": "348370", "type": "주식"}, "리노공업": {"tck": "058470", "type": "주식"},
-            "셀트리온제약": {"tck": "068760", "type": "주식"}, "레인보우로보틱스": {"tck": "277810", "type": "주식"},
-            "HPSP": {"tck": "403870", "type": "주식"}, "삼천당제약": {"tck": "000250", "type": "주식"},
+            "삼천당제약": {"tck": "000250", "type": "주식"}, "셀트리온제약": {"tck": "068760", "type": "주식"},
+            "레인보우로보틱스": {"tck": "277810", "type": "주식"}, "HPSP": {"tck": "403870", "type": "주식"},
             "클래시스": {"tck": "214150", "type": "주식"}, "이오테크닉스": {"tck": "039030", "type": "주식"},
             "신성델타테크": {"tck": "065350", "type": "주식"}, "휴젤": {"tck": "145020", "type": "주식"},
             "동진쎄미켐": {"tck": "005290", "type": "주식"}, "실리콘투": {"tck": "257720", "type": "주식"},
@@ -84,16 +82,15 @@ def load_data():
         }
     }
     
+    # 강제 초기화 로직 (딱 한 번 실행하여 20개로 갱신)
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
+        save_data(default_data)
+        return default_data
+
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-                # 마이그레이션 로직
-                for cat in data:
-                    for name in data[cat]:
-                        if isinstance(data[cat][name], str):
-                            data[cat][name] = {"tck": data[cat][name], "type": "코인" if "코인" in cat else "주식"}
-                return data
+            try: return json.load(f)
             except: return default_data
     return default_data
 
@@ -104,7 +101,7 @@ def save_data(data):
 if 'tickers_dict' not in st.session_state:
     st.session_state.tickers_dict = load_data()
 
-# 3. 고난의 역사 분석
+# 3. 고난의 역사 분석 로직
 def get_hardship_history(df):
     if df.empty: return []
     df = df.copy()
