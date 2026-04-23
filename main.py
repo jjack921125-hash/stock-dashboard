@@ -5,10 +5,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import requests
 
-# 1. 페이지 설정
+# 1. 페이지 설정 및 디자인
 st.set_page_config(page_title="2026 Global Terminal", layout="wide")
-
-# CSS를 이용해 텍스트 색상 지정 (상승: 빨강, 하락: 파랑)
 st.markdown("""
     <style>
     .up-ticker { color: #FF4B4B; font-weight: bold; }
@@ -16,40 +14,59 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📈 2026 글로벌 자산 터미널 (실시간 변동률 & MDD)")
+st.title("📈 2026 글로벌 자산 터미널 (TOP 20 확대판)")
 
-# 2. 종목 데이터 세팅 (이전과 동일)
+# 2. 2026년 4월 기준 시총 TOP 20 종목 리스트
 DEFAULT_TICKERS = {
-    "코인": {"Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL", "XRP": "XRP", "BNB": "BNB", "Dogecoin": "DOGE", "Sui": "SUI", "Aptos": "APT"},
-    "나스닥": {"NVIDIA": "NVDA", "Apple": "AAPL", "Microsoft": "MSFT", "Amazon": "AMZN", "Tesla": "TSLA", "Meta": "META"},
-    "S&P500": {"Berkshire": "BRK-B", "Eli Lilly": "LLY", "JPMorgan": "JPM", "Visa": "V", "UnitedHealth": "UNH"},
-    "코스피": {"삼성전자": "005930", "SK하이닉스": "000660", "LG엔솔": "373220", "현대차": "005380"},
-    "코스닥": {"에코프로비엠": "247540", "알테오젠": "196170", "에코프로": "086520", "HLB": "028300"}
+    "코인": {
+        "Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL", "XRP": "XRP", "BNB": "BNB",
+        "Dogecoin": "DOGE", "Cardano": "ADA", "Avalanche": "AVAX", "Sui": "SUI", "Tron": "TRX",
+        "Toncoin": "TON", "Chainlink": "LINK", "Pepe": "PEPE", "Aptos": "APT", "Near": "NEAR",
+        "Polkadot": "DOT", "Litecoin": "LTC", "Bitcoin Cash": "BCH", "Uniswap": "UNI", "Polygon": "MATIC"
+    },
+    "나스닥": {
+        "NVIDIA": "NVDA", "Apple": "AAPL", "Microsoft": "MSFT", "Amazon": "AMZN", "Alphabet(A)": "GOOGL",
+        "Meta": "META", "Tesla": "TSLA", "Broadcom": "AVGO", "ASML": "ASML", "Costco": "COST",
+        "Netflix": "NFLX", "AMD": "AMD", "Adobe": "ADBE", "Qualcomm": "QCOM", "Arm": "ARM",
+        "Applied Materials": "AMAT", "Intuitive Surgical": "ISRG", "LRCX": "LRCX", "Micron": "MU", "Intel": "INTC"
+    },
+    "S&P500": {
+        "Berkshire": "BRK-B", "Eli Lilly": "LLY", "JPMorgan": "JPM", "Visa": "V", "UnitedHealth": "UNH",
+        "Exxon Mobil": "XOM", "Mastercard": "MA", "Johnson&Johnson": "JNJ", "Procter&Gamble": "PG", "Home Depot": "HD",
+        "AbbVie": "ABBV", "Chevron": "CVX", "Merck": "MRK", "Bank of America": "BAC", "Coca-Cola": "KO",
+        "PepsiCo": "PEP", "Oracle": "ORCL", "Walmart": "WMT", "Costco": "COST", "McDonald's": "MCD"
+    },
+    "코스피": {
+        "삼성전자": "005930", "SK하이닉스": "000660", "LG엔솔": "373220", "삼성바이오": "207940", "현대차": "005380",
+        "기아": "000270", "셀트리온": "068270", "KB금융": "105560", "NAVER": "035420", "신한지주": "055550",
+        "POSCO홀딩스": "005490", "삼성물산": "028260", "현대모비스": "012330", "LG화학": "051910", "하나금융지주": "086790",
+        "삼성생명": "032830", "메리츠금융": "138040", "카카오": "035720", "삼성SDI": "006400", "LG전자": "066570"
+    },
+    "코스닥": {
+        "에코프로비엠": "247540", "알테오젠": "196170", "에코프로": "086520", "HLB": "028300", "엔켐": "348370",
+        "HPSP": "403870", "리노공업": "058470", "레인보우로보틱스": "277810", "클래시스": "214150", "삼천당제약": "000250",
+        "셀트리온제약": "068760", "실리콘투": "257720", "휴젤": "145020", "리가켐바이오": "141080", "리노공업": "058470",
+        "솔브레인": "357780", "동진쎄미켐": "005290", "펄어비스": "263750", "JYP Ent.": "035900", "에스티팜": "237690"
+    }
 }
 
-# 3. 핵심 분석 함수: 역사상 최악의 MDD 및 변동률 계산
+# 3. 핵심 분석 함수 (전구간 MDD 및 변동률)
 def analyze_asset(df):
     if df.empty: return 0, 0, 0, "N/A", "N/A", 0
-    
-    # 당일 변동률 계산 (마지막 종가 vs 전일 종가)
-    curr_price = df['Close'].iloc[-1]
-    prev_price = df['Close'].iloc[-2] if len(df) > 1 else curr_price
+    curr_price = float(df['Close'].iloc[-1])
+    prev_price = float(df['Close'].iloc[-2]) if len(df) > 1 else curr_price
     day_change_pct = ((curr_price / prev_price) - 1) * 100
     
-    # 전구간 MDD 계산 (과거 모든 고점-저점 전수 조사)
     rolling_max = df['Close'].cummax()
     drawdowns = (df['Close'] / rolling_max) - 1.0
-    
     max_mdd = drawdowns.min() * 100
     max_mdd_date = drawdowns.idxmin().strftime('%Y-%m-%d')
     peak_date = rolling_max[:drawdowns.idxmin()].idxmax().strftime('%Y-%m-%d')
-    
-    # 현재 낙폭 (전고점 대비 현재)
     curr_drawdown = ((curr_price / df['Close'].max()) - 1) * 100
     
     return curr_price, day_change_pct, max_mdd, max_mdd_date, peak_date, curr_drawdown
 
-# 4. 데이터 엔진 (빗썸 & 야후파이낸스)
+# 4. 데이터 엔진
 @st.cache_data(ttl=5)
 def get_korea_prices():
     try:
@@ -68,7 +85,7 @@ def fetch_data(symbol, category):
             return df.dropna()
     except: return pd.DataFrame()
 
-# 5. 사이드바 및 환율
+# 5. 환율 및 사이드바
 fx_rate = 1385.0
 try:
     fx = yf.download("USDKRW=X", period="1d", progress=False)
@@ -80,63 +97,68 @@ with st.sidebar:
     selected_name = st.selectbox("종목", list(DEFAULT_TICKERS[category].keys()))
     ticker = DEFAULT_TICKERS[category][selected_name]
 
-# 6. 메인 화면: 선택 종목 상세 분석
+# 6. 메인 화면
 df = fetch_data(ticker, category)
 if not df.empty:
     curr_p, day_chg, hist_mdd, mdd_d, p_d, curr_dd = analyze_asset(df)
     
-    # 당일 변동률 색상 결정
-    color = "red" if day_chg >= 0 else "blue"
-    chg_sign = "+" if day_chg >= 0 else ""
-
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("현재가", f"{curr_p:,.2f}", delta=f"{chg_sign}{day_chg:.2f}%", delta_color="normal")
-    m2.metric("역사상 최악의 MDD", f"{hist_mdd:.2f}%", help=f"고점({p_d}) -> 저점({mdd_d})")
-    m3.metric("현재의 낙폭", f"{curr_dd:.2f}%")
+    if category == "코인":
+        k_prices = get_korea_prices()
+        krw_p = k_prices.get(ticker, 0)
+        # 달러를 환율로 계산한 값과 실제 국내가의 차이 (%)
+        price_diff = ((krw_p / (curr_p * fx_rate)) - 1) * 100 if krw_p > 0 else 0
+        
+        m1.metric("해외가 (USD)", f"${curr_p:,.2f}", delta=f"{day_chg:+.2f}%")
+        m1.write(f"**원화 환산가:** ₩{(curr_p * fx_rate):,.0f}")
+        m2.metric("국내 가격 (KRW)", f"₩{krw_p:,.0f}")
+        m2.write(f"**가격 차이:** {price_diff:+.2f}%") # 달러가 대비 프리미엄
+        m3.metric("역사상 최악 MDD", f"{hist_mdd:.2f}%")
+    else:
+        unit = "₩" if category in ["코스피", "코스닥"] else "$"
+        m1.metric("현재가", f"{unit}{curr_p:,.2f}", delta=f"{day_chg:+.2f}%")
+        m2.metric("역사상 최악 MDD", f"{hist_mdd:.2f}%", help=f"고점({p_d}) -> 저점({mdd_d})")
+        m3.metric("현재 낙폭", f"{curr_dd:.2f}%")
     m4.metric("실시간 환율", f"₩{fx_rate:,.1f}")
 
-    # 차트 주기 설정 및 캔들차트
-    tf = st.pills("차트 주기", ["1D", "1W", "1M"], default="1D")
     fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
     fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=400)
     st.plotly_chart(fig, use_container_width=True)
 
-# 7. 하단 리포트 테이블 (당일 변동률 색상 적용)
+# 7. 하단 상세 분석 리포트
 st.divider()
-st.subheader(f"📊 {category} 상세 분석 리포트")
+st.subheader(f"📊 {category} TOP 20 분석 리포트")
 
 summary = []
 k_all = get_korea_prices() if category == "코인" else {}
 
-for name, tck in DEFAULT_TICKERS[category].items():
+for i, (name, tck) in enumerate(DEFAULT_TICKERS[category].items()):
     sdf = fetch_data(tck, category)
     if not sdf.empty:
         c_p, d_c, h_m, h_d, p_d, c_d = analyze_asset(sdf)
-        
-        # 색상 태그 적용 (HTML 스타일)
         tag = "up-ticker" if d_c >= 0 else "down-ticker"
-        colored_chg = f'<span class="{tag}">{"+" if d_c >= 0 else ""}{d_c:.2f}%</span>'
+        colored_chg = f'<span class="{tag}">{d_c:+.2f}%</span>'
         
-        row = {
-            "종목명": name,
-            "당일 변동률": colored_chg,
-            "역사상 최악 MDD": f"{h_m:.2f}%",
-            "현재 낙폭": f"{c_d:.2f}%",
-            "최악의 시기": h_d,
-            "_mdd": c_d # 정렬용
-        }
+        row = {"종목명": name, "당일 변동": colored_chg, "역사상 최악 MDD": f"{h_m:.2f}%", "현재 낙폭": f"{c_d:.2f}%", "_mdd": c_d, "_rank": i}
         
         if category == "코인":
-            row["국내(빗썸)"] = f"₩{k_all.get(tck, 0):,.0f}"
-            row["해외(USD)"] = f"${c_p:,.2f}"
+            krw_p = k_all.get(tck, 0)
+            diff = ((krw_p / (c_p * fx_rate)) - 1) * 100 if krw_p > 0 and c_p > 0 else 0
+            row["해외($)"] = f"${c_p:,.2f}"
+            row["국내(₩)"] = f"₩{krw_p:,.0f}"
+            row["차이(%)"] = f"{diff:+.2f}%"
         else:
             row["현재가"] = f"{c_p:,.2f}"
-            
         summary.append(row)
 
 res_df = pd.DataFrame(summary)
-# 주식은 낙폭 순, 코인은 시총 순 정렬 유지
-sorted_df = res_df.sort_values("_mdd" if category != "코인" else "종목명") 
+# 코인은 시총순(순서대로), 주식은 하락률순 정렬
+sorted_df = res_df.sort_values("_rank" if category == "코인" else "_mdd")
 
-# HTML 테이블로 렌더링 (색상 적용을 위해)
-st.write(sorted_df.drop(columns=["_mdd"]).to_html(escape=False, index=False), unsafe_allow_html=True)
+# 컬럼 순서 조정
+if category == "코인":
+    cols = ["종목명", "당일 변동", "해외($)", "국내(₩)", "차이(%)", "역사상 최악 MDD", "현재 낙폭"]
+else:
+    cols = ["종목명", "당일 변동", "현재가", "역사상 최악 MDD", "현재 낙폭"]
+
+st.write(sorted_df[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
