@@ -5,10 +5,10 @@ import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="주식/코인 대시보드", page_icon="📈", layout="wide")
-st.title("📈 돈 버는 정보")
+st.title("📈 주식/코인 대시보드")
 
 # ───────────────────────────────────────────
 # 영구 저장 함수
@@ -77,8 +77,6 @@ DEFAULT_TICKERS = {
         "HPSP":            "403870",
         "삼천당제약":       "000250",
     },
-    # FinanceDataReader 코인 티커 형식
-    # KRW 가격: "BTC/KRW", USD 가격: "BTC/USD"
     "코인": {
         "Bitcoin":   "BTC",
         "Ethereum":  "ETH",
@@ -133,21 +131,22 @@ def fmt(price, currency):
     return f"${price:,.4f}" if price < 1 else f"${price:,.2f}"
 
 # ───────────────────────────────────────────
-# 코인 데이터 가져오기 (FinanceDataReader)
+# 코인 데이터 가져오기 (yfinance로 수정)
 # ───────────────────────────────────────────
 @st.cache_data(ttl=300)
 def get_coin_data(coin: str, currency: str = "KRW"):
-    """
-    FinanceDataReader로 코인 데이터를 가져옵니다.
-    coin: "BTC", "ETH" 등
-    currency: "KRW" 또는 "USD"
-    반환: OHLCV DataFrame
-    """
     try:
-        symbol = f"{coin}/{currency}"
-        df = fdr.DataReader(symbol, datetime(2018, 1, 1), datetime.today())
+        # yfinance 티커: BTC-KRW, BTC-USD 형식
+        symbol = f"{coin}-{currency}"
+        df = yf.download(symbol, start="2018-01-01", progress=False)
+        
         if df.empty:
             return pd.DataFrame()
+            
+        # yfinance 최신 버전의 MultiIndex 컬럼 방지
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
         return df
     except Exception as e:
         return pd.DataFrame()
@@ -157,34 +156,20 @@ def get_coin_data(coin: str, currency: str = "KRW"):
 # ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_usd_krw():
-    """
-    FinanceDataReader로 USD/KRW 환율을 가져옵니다.
-    김치프리미엄 계산에 사용해요.
-    """
     try:
         df = fdr.DataReader('USD/KRW', datetime(2024, 1, 1), datetime.today())
         if df.empty:
             return None
-        # 가장 최근 환율 반환
         return df['Close'].iloc[-1]
     except:
         return None
 
 # ───────────────────────────────────────────
-# 김치프리미엄 계산 함수
-# 김치프리미엄 = (업비트 원화가격 / (바이낸스 달러가격 × 환율) - 1) × 100
-# FinanceDataReader 기준:
-# = (BTC/KRW 종가 / (BTC/USD 종가 × USD/KRW 환율) - 1) × 100
+# 김치프리미엄 계산 함수 (보간 처리 추가)
 # ───────────────────────────────────────────
 @st.cache_data(ttl=300)
 def get_kimchi_premium(coin: str):
-    """
-    코인의 김치프리미엄을 계산합니다.
-    반환: (kimchi_df, 현재_프리미엄%)
-    kimchi_df: 날짜별 김치프리미엄 DataFrame
-    """
     try:
-        # 원화/달러 가격 동시에 가져오기
         df_krw = get_coin_data(coin, "KRW")
         df_usd = get_coin_data(coin, "USD")
         df_fx  = fdr.DataReader('USD/KRW', datetime(2018, 1, 1), datetime.today())
@@ -192,23 +177,18 @@ def get_kimchi_premium(coin: str):
         if df_krw.empty or df_usd.empty or df_fx.empty:
             return pd.DataFrame(), None
 
-        # 날짜 기준으로 합치기 (공통 날짜만)
+        # 날짜 기준으로 합치기
         df = pd.DataFrame({
             'KRW가격':  df_krw['Close'],
             'USD가격':  df_usd['Close'],
-            '환율':     df_fx['Close'],
         }).dropna()
-
-        # 달러 가격을 원화로 환산한 가격
+        
+        # 환율 데이터 매칭 및 주말 공백 채우기
+        df['환율'] = df_fx['Close'].reindex(df.index).ffill()
         df['달러환산원화'] = df['USD가격'] * df['환율']
-
-        # 김치프리미엄 계산
-        # 양수: 한국이 더 비쌈 / 음수: 한국이 더 쌈
         df['김치프리미엄(%)'] = (df['KRW가격'] / df['달러환산원화'] - 1) * 100
 
-        # 현재 프리미엄
         current_premium = df['김치프리미엄(%)'].iloc[-1]
-
         return df, current_premium
 
     except Exception as e:
@@ -319,7 +299,6 @@ with st.spinner("데이터 불러오는 중..."):
             start = datetime(2000, 1, 1)
             df = fdr.DataReader(ticker, start, datetime.today())
 
-        # 주/월/년봉 리샘플링
         resample_rule = RESAMPLE_MAP.get(candle_label)
         if resample_rule and not df.empty:
             df = df.resample(resample_rule).agg({
@@ -345,7 +324,6 @@ else:
     col2.metric("기간 최고가", fmt(df['High'].max(), currency))
     col3.metric("기간 최저가", fmt(df['Low'].min(),  currency))
 
-    # 캔들 차트
     fig = go.Figure(go.Candlestick(
         x=df.index,
         open=df['Open'], high=df['High'],
@@ -364,7 +342,6 @@ else:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 거래량 차트
     colors = ['red' if c >= o else 'blue'
               for c, o in zip(df['Close'], df['Open'])]
     fig2 = go.Figure(go.Bar(
@@ -387,7 +364,6 @@ if data_type == "COIN":
     if kp_df.empty or current_kp is None:
         st.warning("김치프리미엄 데이터를 불러올 수 없습니다.")
     else:
-        # 현재 프리미엄 지표
         col1, col2, col3, col4 = st.columns(4)
         col1.metric(
             "현재 김치프리미엄",
@@ -407,20 +383,15 @@ if data_type == "COIN":
             f"₩{kp_df['환율'].iloc[-1]:,.0f}"
         )
 
-        # 김치프리미엄 추이 차트
         fig_kp = go.Figure()
-
-        # 프리미엄 선
         fig_kp.add_trace(go.Scatter(
             x=kp_df.index,
             y=kp_df['김치프리미엄(%)'],
             mode='lines',
             name='김치프리미엄(%)',
-            # 양수 구간: 빨간색, 음수 구간: 파란색
             line=dict(color='orange', width=2),
         ))
 
-        # 0% 기준선
         fig_kp.add_hline(
             y=0,
             line_dash="dash",
@@ -437,7 +408,6 @@ if data_type == "COIN":
         )
         st.plotly_chart(fig_kp, use_container_width=True)
 
-        # 최근 30일 상세 테이블
         st.subheader("📋 최근 30일 김치프리미엄")
         recent = kp_df.tail(30).copy()
         recent['KRW가격']       = recent['KRW가격'].apply(lambda x: fmt(x, "KRW"))
