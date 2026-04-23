@@ -1,162 +1,123 @@
 import streamlit as st
-import FinanceDataReader as fdr
 import yfinance as yf
+import FinanceDataReader as fdr
 import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 st.set_page_config(page_title="주식/코인 대시보드", page_icon="📈", layout="wide")
 st.title("📈 주식/코인 대시보드")
 
 # ───────────────────────────────────────────
-# 영구 저장 함수
+# 데이터 로드 (기존 유지)
 # ───────────────────────────────────────────
 SAVE_FILE = "data.json"
-
-def load_data():
-    if os.path.exists(SAVE_FILE):
-        with open(SAVE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return DEFAULT_TICKERS.copy()
-
-def save_data(data):
-    with open(SAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-# ───────────────────────────────────────────
-# 기본 종목
-# ───────────────────────────────────────────
 DEFAULT_TICKERS = {
-    "S&P500": {
-        "JPMorgan": "JPM", "Berkshire": "BRK-B", "Eli Lilly": "LLY", "Visa": "V",
-        "ExxonMobil": "XOM", "UnitedHealth": "UNH", "Johnson&Johnson": "JNJ",
-        "Mastercard": "MA", "Procter&Gamble": "PG", "Home Depot": "HD",
-    },
-    "나스닥": {
-        "Apple": "AAPL", "Microsoft": "MSFT", "NVIDIA": "NVDA", "Amazon": "AMZN",
-        "Alphabet": "GOOGL", "Meta": "META", "Broadcom": "AVGO", "Tesla": "TSLA",
-        "Costco": "COST", "Netflix": "NFLX",
-    },
-    "코스피": {
-        "삼성전자": "005930", "SK하이닉스": "000660", "삼성바이오로직스": "207940",
-        "LG에너지솔루션": "373220", "현대차": "005380", "셀트리온": "068270",
-        "기아": "000270", "KB금융": "105560", "신한지주": "055550", "삼성물산": "028260",
-    },
-    "코스닥": {
-        "에코프로비엠": "247540", "HLB": "028300", "에코프로": "086520",
-        "알테오젠": "196170", "셀트리온제약": "068760", "리가켐바이오": "141080",
-        "클래시스": "214150", "휴젤": "145020", "HPSP": "403870", "삼천당제약": "000250",
-    },
-    "코인": {
-        "Bitcoin": "BTC", "Ethereum": "ETH", "BNB": "BNB", "Solana": "SOL",
-        "XRP": "XRP", "Dogecoin": "DOGE", "Cardano": "ADA", "Avalanche": "AVAX",
-        "Chainlink": "LINK", "Dot": "DOT",
-    },
+    "S&P500": {"JPMorgan": "JPM", "Berkshire": "BRK-B", "Eli Lilly": "LLY"},
+    "나스닥": {"Apple": "AAPL", "Microsoft": "MSFT", "NVIDIA": "NVDA"},
+    "코스피": {"삼성전자": "005930", "SK하이닉스": "000660"},
+    "코스닥": {"에코프로비엠": "247540", "HLB": "028300"},
+    "코인": {"Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL", "XRP": "XRP"}
 }
-
-MARKET_CONFIG = {
-    "S&P500": {"currency": "USD", "data_type": "US"},
-    "나스닥":  {"currency": "USD", "data_type": "US"},
-    "코스피":  {"currency": "KRW", "data_type": "KR"},
-    "코스닥":  {"currency": "KRW", "data_type": "KR"},
-    "코인":    {"currency": "KRW", "data_type": "COIN"},
-}
-
-CANDLE_OPTIONS = {"1일": "D", "1주": "W", "1달": "ME", "1년": "YE"}
 
 if "tickers" not in st.session_state:
-    st.session_state.tickers = load_data()
-
-def fmt(price, currency):
-    if currency == "KRW":
-        return f"₩{price:,.0f}"
-    return f"${price:,.2f}"
+    if os.path.exists(SAVE_FILE):
+        with open(SAVE_FILE, "r", encoding="utf-8") as f:
+            st.session_state.tickers = json.load(f)
+    else:
+        st.session_state.tickers = DEFAULT_TICKERS.copy()
 
 # ───────────────────────────────────────────
-# 데이터 수집 핵심 함수 (수정됨)
+# [핵심] 안정적인 데이터 추출 함수
 # ───────────────────────────────────────────
-@st.cache_data(ttl=300)
-def get_stable_coin_data(coin_ticker):
-    """안정적인 USD 티커로 가져온 뒤 환율을 적용하여 KRW 데이터 생성"""
-    try:
-        # 1. 코인 달러 가격 가져오기
-        coin_df = yf.download(f"{coin_ticker}-USD", start="2018-01-01", progress=False)
-        # 2. 환율 데이터 가져오기
-        fx_df = yf.download("USDKRW=X", start="2018-01-01", progress=False)
-        
-        if isinstance(coin_df.columns, pd.MultiIndex): coin_df.columns = coin_df.columns.get_level_values(0)
-        if isinstance(fx_df.columns, pd.MultiIndex): fx_df.columns = fx_df.columns.get_level_values(0)
-
-        if coin_df.empty or fx_df.empty: return pd.DataFrame()
-
-        # 데이터 결합 및 원화 환산
-        df = coin_df.copy()
-        df['ExchangeRate'] = fx_df['Close'].reindex(df.index).ffill()
-        
-        # 모든 OHLC 가격에 환율 적용
-        for col in ['Open', 'High', 'Low', 'Close']:
-            df[col] = df[col] * df['ExchangeRate']
+def get_clean_df(ticker_symbol):
+    """yfinance의 Multi-index 구조를 완벽하게 평탄화하여 DF 반환"""
+    data = yf.download(ticker_symbol, start="2023-01-01", progress=False)
+    
+    if data.empty:
+        return pd.DataFrame()
+    
+    # 1. Multi-index 컬럼일 경우 처리 (가장 중요한 부분)
+    if isinstance(data.columns, pd.MultiIndex):
+        # 'Price' 레벨이 있는 경우 해당 레벨만 추출
+        if 'Price' in data.columns.names:
+            data = data.xs(ticker_symbol, axis=1, level=1)
+        else:
+            data.columns = data.columns.get_level_values(0)
             
-        return df
+    # 2. 중복 컬럼 제거 및 필요한 컬럼만 추출
+    data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+    
+    # 3. 누락된 데이터 제거
+    data = data.dropna()
+    
+    return data
+
+@st.cache_data(ttl=300)
+def get_market_data(symbol, market_type):
+    try:
+        if market_type == "코인":
+            # 코인은 USD로 가져와서 계산하는 것이 가장 안정적
+            df = get_clean_df(f"{symbol}-USD")
+            # 환율 적용 (최신 환율 근사치 적용)
+            fx_data = yf.download("USDKRW=X", period="1d", progress=False)
+            if not fx_data.empty:
+                # 환율 데이터 구조 처리
+                if isinstance(fx_data.columns, pd.MultiIndex):
+                    rate = float(fx_data['Close'].iloc[-1].iloc[0])
+                else:
+                    rate = float(fx_data['Close'].iloc[-1])
+                
+                for col in ['Open', 'High', 'Low', 'Close']:
+                    df[col] = df[col] * rate
+            return df
+        else:
+            # 주식은 fdr이 여전히 한국 시장에선 우수함
+            df = fdr.DataReader(symbol, "2023-01-01")
+            return df
     except:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300)
-def get_kimchi_premium_stable(coin_ticker):
-    """국내(Upbit 예상치) vs 해외 프리미엄 계산"""
-    try:
-        # 업비트 등의 API를 직접 쓰지 않는 이상, fdr의 KRW 티커가 작동해야 함
-        # 만약 fdr이 계속 안되면 이 부분은 '해외 가격' 추이 위주로 보게 됨
-        df_krw = fdr.DataReader(f"{coin_ticker}/KRW", datetime(2023, 1, 1))
-        df_usd_stable = get_stable_coin_data(coin_ticker) # 이게 위에서 만든 원화환산가
-
-        if df_krw.empty or df_usd_stable.empty: return pd.DataFrame(), None
-
-        common_index = df_krw.index.intersection(df_usd_stable.index)
-        df = pd.DataFrame(index=common_index)
-        df['KRW가격'] = df_krw['Close']
-        df['해외환산가'] = df_usd_stable['Close']
-        df['김치프리미엄(%)'] = (df['KRW가격'] / df['해외환산가'] - 1) * 100
-        
-        return df, df['김치프리미엄(%)'].iloc[-1]
-    except:
-        return pd.DataFrame(), None
-
 # ───────────────────────────────────────────
-# 메인 로직
+# 사이드바 및 메인 로직
 # ───────────────────────────────────────────
 st.sidebar.title("⚙️ 설정")
-market = st.sidebar.selectbox("시장 선택", list(MARKET_CONFIG.keys()))
-config = MARKET_CONFIG[market]
-ticker_dict = st.session_state.tickers[market]
-selected = st.sidebar.selectbox("종목 선택", list(ticker_dict.keys()))
-ticker = ticker_dict[selected]
-candle_label = st.sidebar.selectbox("캔들 단위", list(CANDLE_OPTIONS.keys()))
+market = st.sidebar.selectbox("시장 선택", list(st.session_state.tickers.keys()))
+selected_name = st.sidebar.selectbox("종목 선택", list(st.session_state.tickers[market].keys()))
+ticker = st.session_state.tickers[market][selected_name]
 
-with st.spinner("데이터 로딩 중..."):
-    if config["data_type"] == "COIN":
-        df = get_stable_coin_data(ticker)
-    else:
-        df = fdr.DataReader(ticker, "2020-01-01")
+with st.spinner("데이터를 실시간으로 불러오는 중..."):
+    df = get_market_data(ticker, market)
 
-if df.empty:
-    st.error("⚠️ 데이터를 가져오지 못했습니다. 잠시 후 다시 시도하거나 티커를 확인하세요.")
+if df is None or df.empty:
+    st.error(f"❌ '{selected_name}({ticker})' 데이터를 불러오는데 실패했습니다.")
+    st.warning("라이브러리 응답 지연일 수 있습니다. '시장 선택'을 다시 한 번 클릭해 보세요.")
 else:
-    # 차트 및 지표 표시
-    c1, c2, c3 = st.columns(3)
-    curr_p = df['Close'].iloc[-1]
-    diff = ((curr_p - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100) if len(df) > 1 else 0
-    c1.metric("현재가 (원화 환산)", fmt(curr_p, "KRW"), f"{diff:.2f}%")
-    c2.metric("기간 최고가", fmt(df['High'].max(), "KRW"))
-    c3.metric("기간 최저가", fmt(df['Low'].min(), "KRW"))
+    # 지표 계산
+    curr_price = float(df['Close'].iloc[-1])
+    prev_price = float(df['Close'].iloc[-2])
+    change = curr_price - prev_price
+    pct_change = (change / prev_price) * 100
+    
+    # 상단 지표
+    col1, col2, col3 = st.columns(3)
+    unit = "₩" if market in ["코스피", "코스닥", "코인"] else "$"
+    col1.metric("현재가", f"{unit}{curr_price:,.0f}" if unit == "₩" else f"{unit}{curr_p:,.2f}", f"{pct_change:+.2f}%")
+    col2.metric("기간 최고가", f"{unit}{df['High'].max():,.0f}" if unit == "₩" else f"{unit}{df['High'].max():,.2f}")
+    col3.metric("최고점 대비 하락률", f"{( (curr_price / df['High'].max()) - 1) * 100:.2f}%")
 
-    fig = go.Figure(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close']))
-    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, title=f"{selected} 차트")
+    # 차트
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index,
+        open=df['Open'], high=df['High'],
+        low=df['Low'], close=df['Close'],
+        increasing_line_color='red', decreasing_line_color='blue'
+    )])
+    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=600, title=f"{selected_name} 차트 (일봉)")
     st.plotly_chart(fig, use_container_width=True)
 
-# 하락률 테이블 (생략 없이 유지)
-st.markdown("---")
-st.subheader(f"📉 {market} 하락률 현황")
-# (하락률 계산 로직...)
+    # 데이터 테이블
+    with st.expander("상세 데이터 보기"):
+        st.dataframe(df.sort_index(ascending=False), use_container_width=True)
