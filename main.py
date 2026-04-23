@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="주식/코인 대시보드", page_icon="📈", layout="wide")
-st.title("📈 주식/코인 대시보드")
+st.title("📈 돈 버는 정보")
 
 # ───────────────────────────────────────────
 # 영구 저장 함수
