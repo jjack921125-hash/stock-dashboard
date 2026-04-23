@@ -7,15 +7,16 @@ import requests
 import json
 import os
 
-# 1. 영구 저장 로직 (유지)
+# 1. 영구 저장 및 데이터 로드 (기존 옵션 유지)
 DB_FILE = "user_settings.json"
 def load_data():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return {
-        "코인": {"Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL"},
-        "나스닥": {"NVIDIA": "NVDA", "Apple": "AAPL", "Tesla": "TSLA"},
-        "코스피": {"삼성전자": "005930"}
+        "코인": {"Bitcoin": "BTC", "Ethereum": "ETH", "Solana": "SOL", "XRP": "XRP", "BNB": "BNB", "Dogecoin": "DOGE"},
+        "나스닥": {"NVIDIA": "NVDA", "Apple": "AAPL", "Microsoft": "MSFT", "Amazon": "AMZN", "Tesla": "TSLA"},
+        "코스피": {"삼성전자": "005930", "SK하이닉스": "000660"},
+        "코스닥": {"에코프로비엠": "247540"}
     }
 
 def save_data(data):
@@ -24,30 +25,22 @@ def save_data(data):
 if 'tickers_dict' not in st.session_state:
     st.session_state.tickers_dict = load_data()
 
-# 2. 고난의 역사 핵심 로직 (날짜 정밀 추적 및 10% 필터링)
+# 2. 고난의 역사 분석 함수 (-10% 이상 필터링)
 def get_hardship_history(df):
     if df.empty: return []
     df = df.copy()
-    
-    # 누적 고점 계산
     df['peak'] = df['Close'].cummax()
     
     history = []
     current_peak_date = df.index[0]
     current_peak_price = df['Close'].iloc[0]
-    
-    # 마디별 최저점 추적용 변수
     madi_min_price = df['Close'].iloc[0]
     madi_min_date = df.index[0]
     
     for i in range(1, len(df)):
-        # 새로운 신고가를 경신했을 때
         if df['Close'].iloc[i] > df['peak'].iloc[i-1]:
-            # 이전 마디의 최대 하락률 계산
             drawdown = (madi_min_price / current_peak_price) - 1
-            
-            # 하락률이 -10% 미만(즉, 10% 이상 폭락)인 경우만 기록
-            if drawdown <= -0.10:
+            if drawdown <= -0.10: # 10% 이상 하락 시 기록
                 history.append({
                     "고점일 (Start)": current_peak_date.strftime('%Y-%m-%d'),
                     "저점일 (Bottom)": madi_min_date.strftime('%Y-%m-%d'),
@@ -56,61 +49,103 @@ def get_hardship_history(df):
                     "하락률": f"{drawdown * 100:.2f}%",
                     "raw_mdd": drawdown
                 })
-            
-            # 새로운 고점으로 기준점 이동
             current_peak_date = df.index[i]
             current_peak_price = df['Close'].iloc[i]
             madi_min_price = current_peak_price
             madi_min_date = df.index[i]
         else:
-            # 신고가 경신 전까지 최저점 갱신 확인
             if df['Close'].iloc[i] < madi_min_price:
                 madi_min_price = df['Close'].iloc[i]
                 madi_min_date = df.index[i]
                 
-    # 현재 진행 중인 마지막 마디 처리
-    final_drawdown = (madi_min_price / current_peak_price) - 1
-    if final_drawdown <= -0.10:
+    final_dd = (madi_min_price / current_peak_price) - 1
+    if final_dd <= -0.10:
         history.append({
             "고점일 (Start)": current_peak_date.strftime('%Y-%m-%d'),
             "저점일 (Bottom)": madi_min_date.strftime('%Y-%m-%d'),
             "고점가": f"{current_peak_price:,.2f}",
             "저점가": f"{madi_min_price:,.2f}",
-            "하락률": f"{final_drawdown * 100:.2f}% (진행중)",
-            "raw_mdd": final_drawdown
+            "하락률": f"{final_dd * 100:.2f}% (진행중)",
+            "raw_mdd": final_dd
         })
-    
-    # 하락률이 큰 순서(고통스러운 순서)대로 정렬
     return sorted(history, key=lambda x: x['raw_mdd'])
 
-# (중략: 데이터 엔진 및 사이드바 UI는 이전과 동일)
-# ... (생략된 부분은 위에서 구현한 영구 저장 및 API 로직을 그대로 사용합니다)
+# 3. 데이터 엔진 (환율, 빗썸 시세 등 기존 유지)
+@st.cache_data(ttl=60)
+def get_realtime_fx():
+    try:
+        fx = yf.download("USDKRW=X", period="1d", progress=False)
+        return float(fx['Close'].iloc[-1])
+    except: return 1480.85
 
-# 5. 메인 탭 구성
+@st.cache_data(ttl=5)
+def get_korea_prices():
+    try:
+        res = requests.get("https://api.bithumb.com/public/ticker/ALL_KRW", timeout=5).json()
+        return {k: float(v['closing_price']) for k, v in res['data'].items() if isinstance(v, dict)}
+    except: return {}
+
+@st.cache_data(ttl=300)
+def fetch_data(symbol, category):
+    try:
+        if category in ["코스피", "코스닥"]: return fdr.DataReader(symbol, "1990-01-01").dropna()
+        else:
+            df = yf.download(f"{symbol}-USD" if category == "코인" else symbol, period="max", progress=False)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            return df.dropna()
+    except: return pd.DataFrame()
+
+# 4. 사이드바 UI
+with st.sidebar:
+    st.header("🔍 종목 조회")
+    category = st.selectbox("시장 선택", list(st.session_state.tickers_dict.keys()))
+    selected_name = st.selectbox("종목 선택", list(st.session_state.tickers_dict[category].keys()))
+    ticker = st.session_state.tickers_dict[category][selected_name]
+    
+    st.divider()
+    st.header("➕ 시장/종목 추가")
+    new_cat = st.text_input("새 시장 이름")
+    if st.button("시장 생성") and new_cat:
+        st.session_state.tickers_dict[new_cat] = {}; save_data(st.session_state.tickers_dict); st.rerun()
+    add_n = st.text_input("종목 별명")
+    add_t = st.text_input("티커 입력")
+    if st.button("종목 추가") and add_n and add_t:
+        st.session_state.tickers_dict[category][add_n] = add_t; save_data(st.session_state.tickers_dict); st.rerun()
+
+# 5. 메인 화면: 탭 시스템 적용
 df = fetch_data(ticker, category)
 if not df.empty:
-    tab1, tab2 = st.tabs(["📊 실시간 분석", "🌋 고난의 역사 (-10% 이상)"])
+    tab1, tab2 = st.tabs(["📊 실시간 분석 리포트", "🌋 고난의 역사 (-10% 이상)"])
 
     with tab1:
-        # (기존 실시간 분석 차트 및 지표 출력)
+        fx_rate = get_realtime_fx()
         curr_p = df['Close'].iloc[-1]
-        st.metric("현재가", f"{curr_p:,.2f}")
+        day_chg = ((curr_p / df['Close'].iloc[-2]) - 1) * 100 if len(df) > 1 else 0
+        
+        m1, m2, m3, m4 = st.columns(4)
+        if category == "코인":
+            krw_p = get_korea_prices().get(ticker, 0)
+            diff = ((krw_p / (curr_p * fx_rate)) - 1) * 100 if krw_p > 0 else 0
+            m1.metric("해외 ($)", f"${curr_p:,.2f}", delta=f"{day_chg:+.2f}%")
+            m2.metric("국내 (₩)", f"₩{krw_p:,.0f}")
+            m3.metric("차이 (%)", f"{diff:+.2f}%")
+            m4.metric("환율", f"₩{fx_rate:,.1f}")
+        else:
+            m1.metric("현재가", f"{curr_p:,.2f}", delta=f"{day_chg:+.2f}%")
+            m2.metric("역대 최고가", f"{df['Close'].max():,.2f}")
+            m3.metric("환율", f"₩{fx_rate:,.1f}")
+            m4.metric("현재 낙폭", f"{((curr_p/df['peak'].iloc[-1])-1)*100:.2f}%")
+
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
+        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=450)
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.subheader(f"🌋 {selected_name} : 역대 10% 이상 하락 구간")
-        st.caption("신고가를 경신하기 전까지 발생했던 '의미 있는 폭락'의 시작점과 바닥점을 추적한 결과입니다.")
-        
-        history_data = get_hardship_history(df)
-        
-        if history_data:
-            h_df = pd.DataFrame(history_data).drop(columns=['raw_mdd'])
-            # 테이블 가독성을 위해 인덱스를 1부터 시작
-            h_df.index = h_df.index + 1
+        st.subheader(f"🌋 {selected_name}의 역사적 고통 구간 분석")
+        st.caption("신고가를 향해 달려가는 과정에서 발생했던 '의미 있는 -10% 이상 하락' 기록입니다.")
+        h_history = get_hardship_history(df)
+        if h_history:
+            h_df = pd.DataFrame(h_history).drop(columns=['raw_mdd'])
             st.table(h_df)
-            
-            st.warning(f"💡 이 종목은 상장 이후 총 **{len(history_data)}번**의 10% 이상 하락 구간을 견디며 성장해왔습니다.")
         else:
-            st.info("이 종목은 상장 이후 10% 이상의 하락을 겪지 않은 매우 강한 우상향 종목입니다.")
+            st.info("이 종목은 상장 후 10% 이상의 하락을 겪지 않은 초우량 종목입니다.")
