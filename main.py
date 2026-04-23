@@ -19,6 +19,7 @@ st.markdown("""
 
 # 2. 데이터 로드 및 2026년 4월 기준 시총 상위 20 종목 셋팅
 def load_data():
+    if os.path.exists(DB_FILE): os.remove(DB_FILE)
     default_data = {
         "코인 (스테이블 제외)": {
             "Bitcoin": {"tck": "BTC", "type": "코인"}, "Ethereum": {"tck": "ETH", "type": "코인"},
