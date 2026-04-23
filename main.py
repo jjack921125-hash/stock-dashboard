@@ -82,7 +82,6 @@ def load_data():
         }
     }
     
-    # 강제 초기화 로직 (딱 한 번 실행하여 20개로 갱신)
     if 'initialized' not in st.session_state:
         st.session_state.initialized = True
         save_data(default_data)
@@ -101,7 +100,7 @@ def save_data(data):
 if 'tickers_dict' not in st.session_state:
     st.session_state.tickers_dict = load_data()
 
-# 3. 고난의 역사 분석 로직
+# 3. 고난의 역사 분석 로직 (최신순 정렬 반영)
 def get_hardship_history(df):
     if df.empty: return []
     df = df.copy()
@@ -118,7 +117,7 @@ def get_hardship_history(df):
                     "고점일 (Start)": cp_date.strftime('%Y-%m-%d'),
                     "저점일 (Bottom)": m_min_date.strftime('%Y-%m-%d'),
                     "고점가": f"{cp_price:,.2f}", "저점가": f"{m_min_price:,.2f}",
-                    "하락률": f"{dd * 100:.2f}%", "raw_mdd": dd
+                    "하락률": f"{dd * 100:.2f}%", "dt_key": cp_date # 정렬용 키
                 })
             cp_date, cp_price = df.index[i], df['Close'].iloc[i]
             m_min_price, m_min_date = cp_price, df.index[i]
@@ -128,8 +127,13 @@ def get_hardship_history(df):
     final_dd = (m_min_price / cp_price) - 1
     if final_dd <= -0.10:
         history.append({"고점일 (Start)": cp_date.strftime('%Y-%m-%d'), "저점일 (Bottom)": m_min_date.strftime('%Y-%m-%d'),
-                        "하락률": f"{final_dd * 100:.2f}% (진행중)", "raw_mdd": final_dd})
-    return sorted(history, key=lambda x: x['raw_mdd'])
+                        "하락률": f"{final_dd * 100:.2f}% (진행중)", "dt_key": cp_date})
+    
+    # 고점일(dt_key) 기준 내림차순 정렬 (최신 날짜가 가장 위로)
+    sorted_history = sorted(history, key=lambda x: x['dt_key'], reverse=True)
+    # 정렬용 키 제거 후 반환
+    for item in sorted_history: item.pop('dt_key', None)
+    return sorted_history
 
 # 4. 데이터 엔진
 @st.cache_data(ttl=60)
@@ -214,9 +218,9 @@ if tk_info:
             fig.update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
         with tab2:
-            st.subheader(f"🌋 {selected_name} 역대 폭락 구간 (-10% 이상)")
+            st.subheader(f"🌋 {selected_name} 역대 폭락 구간 (최신순)")
             h_data = get_hardship_history(df)
-            if h_data: st.table(pd.DataFrame(h_data).drop(columns=['raw_mdd']))
+            if h_data: st.table(pd.DataFrame(h_data))
             else: st.info("대상 구간이 없습니다.")
 
     st.divider()
