@@ -3,4 +3,3 @@ finance-datareader
 yfinance
 plotly
 pandas
-requests
