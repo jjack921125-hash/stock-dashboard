@@ -10,7 +10,7 @@ import os
 
 # 1. 초기 설정 및 스타일
 DB_FILE = "user_settings.json"
-DATA_VERSION = "2026.04.24.03" # 거래량 보정 버전
+DATA_VERSION = "2026.04.24.04" 
 
 st.set_page_config(page_title="2026 Global Terminal", layout="wide")
 st.markdown("""
@@ -21,7 +21,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. 데이터 엔진 및 2026년 기준 데이터 (코스닥 포함 모든 리스트 유지)
+# 2. 데이터 엔진 (코스피/코스닥/나스닥/코인 리스트 완벽 유지)
 def load_data():
     default_data = {
         "version": DATA_VERSION,
@@ -112,7 +112,7 @@ def save_data(data):
 if 'tickers_dict' not in st.session_state:
     st.session_state.tickers_dict = load_data()
 
-# 3. 고난의 역사 분석 로직
+# 3. 고난의 역사 분석 로직 (유지)
 def get_hardship_history(df):
     if df.empty: return []
     df = df.copy()
@@ -145,7 +145,7 @@ def get_hardship_history(df):
     for item in sorted_history: item.pop('dt_key', None)
     return sorted_history
 
-# 4. 데이터 엔진
+# 4. 데이터 엔진 (유지)
 @st.cache_data(ttl=60)
 def get_realtime_fx():
     try: return float(yf.download("USDKRW=X", period="1d", progress=False)['Close'].iloc[-1])
@@ -172,7 +172,7 @@ def fetch_data(symbol, asset_type, timeframe="1d"):
         return df.dropna()
     except: return pd.DataFrame()
 
-# 5. 사이드바 및 관리
+# 5. 사이드바 관리 (유지)
 with st.sidebar:
     st.header("🔍 종목 조회")
     cat_list = list(st.session_state.tickers_dict.keys())
@@ -235,28 +235,31 @@ if tk_info:
                 m2.metric("최악 MDD", f"{hm:.2f}%"); m3.metric("현재 낙폭", f"{cd:.2f}%")
             m4.metric("실시간 환율", f"₩{fx_rate:,.1f}")
 
-            # [수정] 서브플롯 레이아웃 최적화 (Y축 독립 할당)
+            # [수정] 거래량 시인성 극대화 레이아웃
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                               vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                               vertical_spacing=0.07, row_heights=[0.65, 0.35])
 
-            # 1. 캔들차트 (Y축 1번)
+            # 1. 가격 캔들차트
             fig.add_trace(go.Candlestick(
                 x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
                 name="Price", increasing_line_color='#FF4B4B', decreasing_line_color='#4B9BFF'
             ), row=1, col=1)
 
-            # 2. 거래량 바차트 (Y축 2번 - 가격 축과 완전히 분리)
+            # 2. 거래량 바차트 (채도 상향 및 라인 제거)
             colors = ['#FF4B4B' if c >= o else '#4B9BFF' for o, c in zip(df['Open'], df['Close'])]
             fig.add_trace(go.Bar(
-                x=df.index, y=df['Volume'], name="Volume", marker_color=colors, opacity=0.8
+                x=df.index, y=df['Volume'], name="Volume", marker_color=colors, 
+                opacity=1.0, marker_line_width=0
             ), row=2, col=1)
 
-            fig.update_layout(template="plotly_dark", height=700, showlegend=False, 
-                              xaxis_rangeslider_visible=False, margin=dict(t=30, b=10))
+            fig.update_layout(template="plotly_dark", height=800, showlegend=False, 
+                              xaxis_rangeslider_visible=False, margin=dict(t=20, b=20, l=10, r=10))
             
-            # [수정] 거래량 전용 Y축 설정 (눈금 제거 및 제목 추가)
-            fig.update_yaxes(title_text="Price", row=1, col=1)
-            fig.update_yaxes(title_text="Volume", showgrid=False, row=2, col=1) 
+            # [수정] 거래량 스케일 자동 최적화 핵심 설정
+            fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+            fig.update_yaxes(title_text="Volume", showgrid=False, 
+                             fixedrange=False,  # 구간 확대 시 Y축 자동 최적화
+                             row=2, col=1) 
 
             st.plotly_chart(fig, use_container_width=True)
 
