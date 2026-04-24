@@ -8,9 +8,9 @@ import requests
 import json
 import os
 
-# 1. 초기 설정 및 스타일
+# 1. 초기 설정 (버전 관리로 데이터 초기화 방지)
 DB_FILE = "user_settings.json"
-DATA_VERSION = "2026.04.24.12" # 리스트 복구 버전
+DATA_VERSION = "2026.04.24.15" 
 
 st.set_page_config(page_title="2026 Global Terminal", layout="wide")
 st.markdown("""
@@ -18,10 +18,11 @@ st.markdown("""
     .up-ticker { color: #089981; font-weight: bold; }
     .down-ticker { color: #F23645; font-weight: bold; }
     .stMetric { background-color: #131722; border: 1px solid #363a45; padding: 15px; border-radius: 5px; }
+    th { background-color: #1e222d !important; color: #d1d4dc !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# 2. 데이터 엔진 (종목 개수 100% 복구)
+# 2. 데이터 엔진 (사용자님의 원본 리스트 100% 보존)
 def load_data():
     default_data = {
         "version": DATA_VERSION,
@@ -104,7 +105,29 @@ def save_data(data):
 if 'tickers_dict' not in st.session_state:
     st.session_state.tickers_dict = load_data()
 
-# 3. 데이터 엔진
+# 3. 고난의 역사 분석 함수 (보존)
+def get_hardship_history(df):
+    if df.empty: return []
+    df = df.copy()
+    df['peak'] = df['Close'].cummax()
+    history, cp_date = [], df.index[0]
+    cp_price = m_min_price = df['Close'].iloc[0]
+    m_min_date = df.index[0]
+    for i in range(1, len(df)):
+        if df['Close'].iloc[i] > df['peak'].iloc[i-1]:
+            dd = (m_min_price / cp_price) - 1
+            if dd <= -0.10:
+                history.append({"고점일": cp_date.strftime('%Y-%m-%d'), "저점일": m_min_date.strftime('%Y-%m-%d'), "하락률": f"{dd * 100:.2f}%", "dt_key": cp_date})
+            cp_date, cp_price = df.index[i], df['Close'].iloc[i]
+            m_min_price, m_min_date = cp_price, df.index[i]
+        elif df['Close'].iloc[i] < m_min_price:
+            m_min_price, m_min_date = df['Close'].iloc[i], df.index[i]
+    final_dd = (m_min_price / cp_price) - 1
+    if final_dd <= -0.10:
+        history.append({"고점일": cp_date.strftime('%Y-%m-%d'), "저점일": m_min_date.strftime('%Y-%m-%d'), "하락률": f"{final_dd * 100:.2f}% (진행중)", "dt_key": cp_date})
+    return sorted(history, key=lambda x: x['dt_key'], reverse=True)
+
+# 4. 데이터 페칭 로직
 @st.cache_data(ttl=60)
 def get_realtime_fx():
     try: return float(yf.download("USDKRW=X", period="1d", progress=False)['Close'].iloc[-1])
@@ -133,41 +156,33 @@ def fetch_data(symbol, asset_type, timeframe="1일"):
         return df.dropna()
     except: return pd.DataFrame()
 
-# 4. 사이드바 (관리 기능 포함)
+# 5. 사이드바 (종목 관리 복구)
 with st.sidebar:
     st.header("🔍 Market Explorer")
     cat_list = list(st.session_state.tickers_dict.keys())
-    category = st.selectbox("시장 선택", cat_list) if cat_list else None
-    
-    if category:
-        name_list = list(st.session_state.tickers_dict[category].keys())
-        selected_name = st.selectbox("종목 선택", name_list) if name_list else None
-        tk_info = st.session_state.tickers_dict[category].get(selected_name)
-    else: tk_info = None
+    category = st.selectbox("시장", cat_list)
+    selected_name = st.selectbox("종목", list(st.session_state.tickers_dict[category].keys()))
+    tk_info = st.session_state.tickers_dict[category][selected_name]
 
     st.divider()
-    with st.expander("➕ 종목 추가"):
-        an, at = st.text_input("이름"), st.text_input("티커")
+    with st.expander("➕ 종목 추가 / 시장 생성"):
+        an, at = st.text_input("종목명"), st.text_input("티커")
         aty = st.radio("유형", ["주식", "코인"], horizontal=True)
         if st.button("추가") and an and at:
             st.session_state.tickers_dict[category][an] = {"tck": at, "type": aty}
             save_data(st.session_state.tickers_dict); st.rerun()
-
-    with st.expander("🗑️ 종목 삭제"):
-        if category and name_list:
-            dt = st.selectbox("삭제 대상", name_list)
-            if st.button("삭제 실행"):
-                del st.session_state.tickers_dict[category][dt]
-                save_data(st.session_state.tickers_dict); st.rerun()
-
-    with st.expander("⚙️ 시장 관리"):
-        new_c = st.text_input("새 시장")
-        if st.button("생성") and new_c:
+        st.divider()
+        new_c = st.text_input("새 시장 이름")
+        if st.button("시장 생성") and new_c:
             st.session_state.tickers_dict[new_c] = {}; save_data(st.session_state.tickers_dict); st.rerun()
-        if st.button("현재 시장 삭제") and category:
-            del st.session_state.tickers_dict[category]; save_data(st.session_state.tickers_dict); st.rerun()
 
-# 5. 메인 화면 (트레이딩뷰 스타일)
+    with st.expander("🗑️ 삭제"):
+        dt = st.selectbox("삭제 대상", list(st.session_state.tickers_dict[category].keys()))
+        if st.button("종목 삭제"):
+            del st.session_state.tickers_dict[category][dt]
+            save_data(st.session_state.tickers_dict); st.rerun()
+
+# 6. 메인 화면
 if tk_info:
     c1, c2 = st.columns([7, 3])
     with c1: st.title(f"{selected_name} · {tk_info['tck']}")
@@ -177,6 +192,7 @@ if tk_info:
     if not df.empty:
         fx_rate = get_realtime_fx()
         cp = float(df['Close'].iloc[-1]); dc = ((cp / df['Close'].iloc[-2]) - 1) * 100 if len(df) > 1 else 0
+        hm = ((df['Close'] / df['Close'].cummax()) - 1).min() * 100; cd = ((cp / df['Close'].max()) - 1) * 100
         
         m1, m2, m3, m4 = st.columns(4)
         if tk_info['type'] == "코인":
@@ -186,29 +202,42 @@ if tk_info:
             m3.metric("Kimchi (%)", f"{((kp/(cp*fx_rate))-1)*100:+.2f}%" if kp>0 else "-")
         else:
             m1.metric("Current", f"{cp:,.2f}", delta=f"{dc:+.2f}%")
-            m2.metric("MDD", f"{((cp/df['Close'].max())-1)*100:.2f}%")
-            m3.metric("High", f"{df['High'].max():,.2f}")
+            m2.metric("Max MDD", f"{hm:.2f}%"); m3.metric("Drawdown", f"{cd:.2f}%")
         m4.metric("FX Rate", f"₩{fx_rate:,.1f}")
 
-        # [핵심] 트레이딩뷰 스타일 차트 설정
+        # 차트 (트레이딩뷰 스타일)
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.8, 0.2])
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
                                      increasing_fillcolor='#089981', increasing_line_color='#089981',
                                      decreasing_fillcolor='#F23645', decreasing_line_color='#F23645'), row=1, col=1)
-        
-        vol_colors = ['rgba(8, 153, 129, 0.5)' if c >= o else 'rgba(242, 54, 69, 0.5)' for o, c in zip(df['Open'], df['Close'])]
-        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, marker_line_width=0), row=2, col=1)
-
-        x_fmt = "%y-%m-%d"
-        if tf in ["1h", "4h"]: x_fmt = "%m-%d %H:%M"
-        elif tf == "1년": x_fmt = "%Y"
-
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color='#26a69a', opacity=0.5), row=2, col=1)
         fig.update_layout(template="plotly_dark", paper_bgcolor='#131722', plot_bgcolor='#131722', height=800, 
-                          showlegend=False, xaxis_rangeslider_visible=False, margin=dict(t=10, b=10, l=10, r=10), hovermode='x unified')
-        fig.update_xaxes(type='date', gridcolor='#2a2e39', tickformat=x_fmt, nticks=12, automargin=True, row=2, col=1)
-        fig.update_yaxes(gridcolor='#2a2e39', side="right", fixedrange=False, row=1, col=1)
-        fig.update_yaxes(showticklabels=False, gridcolor='#2a2e39', row=2, col=1)
+                          xaxis_rangeslider_visible=False, margin=dict(t=10, b=10, l=10, r=10), hovermode='x unified')
+        fig.update_yaxes(side="right"); st.plotly_chart(fig, use_container_width=True)
 
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("사이드바에서 종목을 선택하거나 새로 추가해주세요.")
+        # [보존] 고난의 역사
+        st.subheader("🌋 고난의 역사 (Major Drawdowns)")
+        df_daily = fetch_data(tk_info['tck'], tk_info['type'], "1일")
+        h_data = get_hardship_history(df_daily)
+        if h_data: st.table(pd.DataFrame(h_data).drop(columns=['dt_key']))
+        
+        # [보존] 시장 요약 테이블
+        st.divider()
+        st.subheader(f"📊 {category} 일괄 분석")
+        summary_data, k_all = [], get_korea_prices()
+        for name, info in st.session_state.tickers_dict[category].items():
+            sdf = fetch_data(info['tck'], info['type'], "1일")
+            if not sdf.empty:
+                cur_p = float(sdf['Close'].iloc[-1])
+                chg = ((cur_p / sdf['Close'].iloc[-2]) - 1) * 100 if len(sdf) > 1 else 0
+                mdd = ((cur_p / sdf['Close'].max()) - 1) * 100
+                tag = "up-ticker" if chg >= 0 else "down-ticker"
+                row = {"종목": name, "변동": f'<span class="{tag}">{chg:+.2f}%</span>', "낙폭": f"{mdd:.2f}%", "_raw": mdd}
+                if info['type'] == "코인":
+                    kp = k_all.get(info['tck'], 0)
+                    row["해외($)"] = f"{cur_p:,.2f}"; row["국내(₩)"] = f"{kp:,.0f}"
+                else: row["현재가"] = f"{cur_p:,.2f}"
+                summary_data.append(row)
+        if summary_data:
+            res_df = pd.DataFrame(summary_data).sort_values("_raw")
+            st.write(res_df.drop(columns=['_raw']).to_html(escape=False, index=False), unsafe_allow_html=True)
