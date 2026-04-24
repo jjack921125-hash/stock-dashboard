@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import json
 import os
+from datetime import datetime
 
 # 1. 초기 설정
 DB_FILE = "user_settings.json"
@@ -127,7 +128,7 @@ def get_hardship_history(df):
         history.append({"고점일": cp_date.strftime('%Y-%m-%d'), "저점일": m_min_date.strftime('%Y-%m-%d'), "하락률": f"{final_dd * 100:.2f}% (진행중)", "dt_key": cp_date})
     return sorted(history, key=lambda x: x['dt_key'], reverse=True)
 
-# 4. 데이터 페칭 (변경점 1 반영: 봉 단위에 따른 데이터 범위 조절)
+# 4. 데이터 페칭 (코드ref 보존)
 @st.cache_data(ttl=60)
 def get_realtime_fx():
     try: return float(yf.download("USDKRW=X", period="1d", progress=False)['Close'].iloc[-1])
@@ -141,7 +142,6 @@ def get_korea_prices():
     except: return {}
 
 def fetch_data(symbol, asset_type, timeframe="1일"):
-    # [변경점 1] 작은 봉 단위(1h, 4h)는 너무 긴 기간 조회 시 차트가 빡빡해지므로 최근 60일(트레이딩뷰 스타일)로 조절
     tf_map = {
         "1h": ("60d", "60m"), 
         "4h": ("60d", "90m"), 
@@ -227,16 +227,34 @@ if tk_info:
         vol_colors = ['rgba(242, 54, 69, 0.5)' if c >= o else 'rgba(0, 0, 255, 0.5)' for o, c in zip(df['Open'], df['Close'])]
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, marker_line_width=0), row=2, col=1)
         
-        # [변경점 2] xaxis_rangeslider_visible=True 설정으로 X축 스크롤바 추가
         fig.update_layout(template="plotly_dark", paper_bgcolor='#131722', plot_bgcolor='#131722', height=800, 
                           xaxis_rangeslider_visible=True, margin=dict(t=10, b=10, l=10, r=10), hovermode='x unified')
         fig.update_yaxes(side="right"); st.plotly_chart(fig, use_container_width=True)
 
-        # [보존] 고난의 역사
+        # [변경점 1] 고난의 역사 - 현재일 기준 상태 한 줄 추가
         st.subheader("🌋 고난의 역사 (Major Drawdowns)")
         df_daily = fetch_data(tk_info['tck'], tk_info['type'], "1일")
         h_data = get_hardship_history(df_daily)
-        if h_data: st.table(pd.DataFrame(h_data).drop(columns=['dt_key']))
+        
+        if not df_daily.empty:
+            peak_price = df_daily['Close'].max()
+            peak_date = df_daily['Close'].idxmax().strftime('%Y-%m-%d')
+            current_price = df_daily['Close'].iloc[-1]
+            current_dd = ((current_price / peak_price) - 1) * 100
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            
+            # 현재 상태 데이터 구성
+            today_status = {
+                "고점일": f"{peak_date} (역대최고)",
+                "저점일": f"{today_str} (현재)",
+                "하락률": f"{current_dd:.2f}%"
+            }
+            
+            # 테이블용 데이터프레임 생성
+            h_df = pd.DataFrame(h_data).drop(columns=['dt_key']) if h_data else pd.DataFrame(columns=["고점일", "저점일", "하락률"])
+            # 최상단에 현재 상태 삽입
+            h_df = pd.concat([pd.DataFrame([today_status]), h_df], ignore_index=True)
+            st.table(h_df)
         
         # [보존] 일괄 분석 테이블
         st.divider()
