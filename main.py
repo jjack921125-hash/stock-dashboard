@@ -127,7 +127,7 @@ def get_hardship_history(df):
         history.append({"고점일": cp_date.strftime('%Y-%m-%d'), "저점일": m_min_date.strftime('%Y-%m-%d'), "하락률": f"{final_dd * 100:.2f}% (진행중)", "dt_key": cp_date})
     return sorted(history, key=lambda x: x['dt_key'], reverse=True)
 
-# 4. 데이터 페칭 (변경점 2 반영: 시간봉 처리 최적화)
+# 4. 데이터 페칭 (변경점 1 반영: 봉 단위에 따른 데이터 범위 조절)
 @st.cache_data(ttl=60)
 def get_realtime_fx():
     try: return float(yf.download("USDKRW=X", period="1d", progress=False)['Close'].iloc[-1])
@@ -141,10 +141,10 @@ def get_korea_prices():
     except: return {}
 
 def fetch_data(symbol, asset_type, timeframe="1일"):
-    # [설명] yfinance 정책상 1h/4h 봉은 데이터 기간(period)이 최근 730일 이내여야 조회가 가능합니다.
+    # [변경점 1] 작은 봉 단위(1h, 4h)는 너무 긴 기간 조회 시 차트가 빡빡해지므로 최근 60일(트레이딩뷰 스타일)로 조절
     tf_map = {
-        "1h": ("730d", "60m"), 
-        "4h": ("730d", "90m"), # yf는 공식 4h를 미지원하므로 90m 혹은 1d 권장하나 90m으로 설정
+        "1h": ("60d", "60m"), 
+        "4h": ("60d", "90m"), 
         "1일": ("max", "1d"), 
         "1주": ("max", "1wk"), 
         "1달": ("max", "1mo"), 
@@ -153,10 +153,9 @@ def fetch_data(symbol, asset_type, timeframe="1일"):
     period, interval = tf_map.get(timeframe, ("max", "1d"))
     try:
         if asset_type == "주식" and symbol.isdigit():
-            # 한국 주식의 시간봉 데이터는 yf에서 제한적이므로 fdr 사용 (fdr은 일봉 이상 최적화됨)
             if timeframe in ["1h", "4h"]:
-                df = yf.download(f"{symbol}.KS", period="730d", interval=interval, progress=False)
-                if df.empty: df = yf.download(f"{symbol}.KQ", period="730d", interval=interval, progress=False)
+                df = yf.download(f"{symbol}.KS", period=period, interval=interval, progress=False)
+                if df.empty: df = yf.download(f"{symbol}.KQ", period=period, interval=interval, progress=False)
             else:
                 df = fdr.DataReader(symbol, "1990-01-01")
                 if timeframe == "1주": df = df.resample('W').last()
@@ -200,7 +199,6 @@ with st.sidebar:
 if tk_info:
     c1, c2 = st.columns([7, 3])
     with c1: st.title(f"{selected_name} · {tk_info['tck']}")
-    # [설명] 시간봉(1h, 4h) 선택 시 주식은 yfinance 서버 상황에 따라 캔들이 누락될 수 있으며, 이때는 일봉으로 자동 대체되거나 공백으로 나옵니다.
     with c2: tf = st.segmented_control("Interval", ["1h", "4h", "1일", "1주", "1달", "1년"], default="1일")
 
     df = fetch_data(tk_info['tck'], tk_info['type'], tf)
@@ -220,17 +218,18 @@ if tk_info:
             m2.metric("Max MDD", f"{hm:.2f}%"); m3.metric("Drawdown", f"{cd:.2f}%")
         m4.metric("FX Rate", f"₩{fx_rate:,.1f}")
 
-        # [변경점 1] 가격 및 거래량 색상 변경 (상승 Red, 하락 Blue)
+        # 차트 영역
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.8, 0.2])
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-                                     increasing_fillcolor='#F23645', increasing_line_color='#F23645', # 상승 Red
-                                     decreasing_fillcolor='#0000FF', decreasing_line_color='#0000FF'), row=1, col=1) # 하락 Blue
+                                     increasing_fillcolor='#F23645', increasing_line_color='#F23645',
+                                     decreasing_fillcolor='#0000FF', decreasing_line_color='#0000FF'), row=1, col=1)
         
         vol_colors = ['rgba(242, 54, 69, 0.5)' if c >= o else 'rgba(0, 0, 255, 0.5)' for o, c in zip(df['Open'], df['Close'])]
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, marker_line_width=0), row=2, col=1)
         
+        # [변경점 2] xaxis_rangeslider_visible=True 설정으로 X축 스크롤바 추가
         fig.update_layout(template="plotly_dark", paper_bgcolor='#131722', plot_bgcolor='#131722', height=800, 
-                          xaxis_rangeslider_visible=False, margin=dict(t=10, b=10, l=10, r=10), hovermode='x unified')
+                          xaxis_rangeslider_visible=True, margin=dict(t=10, b=10, l=10, r=10), hovermode='x unified')
         fig.update_yaxes(side="right"); st.plotly_chart(fig, use_container_width=True)
 
         # [보존] 고난의 역사
@@ -239,12 +238,11 @@ if tk_info:
         h_data = get_hardship_history(df_daily)
         if h_data: st.table(pd.DataFrame(h_data).drop(columns=['dt_key']))
         
-        # [변경점 3] 일괄 분석 테이블 (코인 카테고리만 시총순 정렬 유지)
+        # [보존] 일괄 분석 테이블
         st.divider()
         st.subheader(f"📊 {category} 일괄 분석")
         summary_data, k_all = [], get_korea_prices()
         
-        # [설명] 원본 리스트 순서가 시총 순이므로 정렬 없이 그대로 순회하면 시총 순이 유지됩니다.
         for name, info in st.session_state.tickers_dict[category].items():
             sdf = fetch_data(info['tck'], info['type'], "1일")
             if not sdf.empty:
@@ -260,7 +258,5 @@ if tk_info:
                 summary_data.append(row)
         
         if summary_data:
-            # [변경점 3 적용] '코인' 시장일 때는 사용자 입력 순서(시총순)를 보존하고, 주식은 기존처럼 낙폭순 정렬을 원하시면 sort_values를 사용하세요.
-            # 여기서는 요청하신 대로 코인은 입력 순(시총순) 그대로 노출합니다.
             res_df = pd.DataFrame(summary_data)
             st.write(res_df.to_html(escape=False, index=False), unsafe_allow_html=True)
