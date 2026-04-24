@@ -10,7 +10,7 @@ import os
 
 # 1. 초기 설정 및 스타일
 DB_FILE = "user_settings.json"
-DATA_VERSION = "2026.04.24.04" 
+DATA_VERSION = "2026.04.24.05" 
 
 st.set_page_config(page_title="2026 Global Terminal", layout="wide")
 st.markdown("""
@@ -21,7 +21,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. 데이터 엔진 (코스피/코스닥/나스닥/코인 리스트 완벽 유지)
+# 2. 데이터 엔진 (기존 리스트 유지)
 def load_data():
     default_data = {
         "version": DATA_VERSION,
@@ -235,7 +235,7 @@ if tk_info:
                 m2.metric("최악 MDD", f"{hm:.2f}%"); m3.metric("현재 낙폭", f"{cd:.2f}%")
             m4.metric("실시간 환율", f"₩{fx_rate:,.1f}")
 
-            # [수정] 거래량 시인성 극대화 레이아웃
+            # 서브플롯 레이아웃
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                                vertical_spacing=0.07, row_heights=[0.65, 0.35])
 
@@ -245,7 +245,7 @@ if tk_info:
                 name="Price", increasing_line_color='#FF4B4B', decreasing_line_color='#4B9BFF'
             ), row=1, col=1)
 
-            # 2. 거래량 바차트 (채도 상향 및 라인 제거)
+            # 2. 거래량 바차트
             colors = ['#FF4B4B' if c >= o else '#4B9BFF' for o, c in zip(df['Open'], df['Close'])]
             fig.add_trace(go.Bar(
                 x=df.index, y=df['Volume'], name="Volume", marker_color=colors, 
@@ -255,11 +255,21 @@ if tk_info:
             fig.update_layout(template="plotly_dark", height=800, showlegend=False, 
                               xaxis_rangeslider_visible=False, margin=dict(t=20, b=20, l=10, r=10))
             
-            # [수정] 거래량 스케일 자동 최적화 핵심 설정
+            # [수정] X축 최적화 (눈금 수 제한 및 겹침 방지)
+            fig.update_xaxes(
+                nticks=10, # 화면 크기에 맞춰 최대 10개 내외의 라벨 표시
+                tickformatstops=[
+                    dict(dtickrange=[None, 3600000], value="%H:%M"), # 1시간 미만
+                    dict(dtickrange=[3600000, 86400000], value="%m-%d %H:%M"), # 1일 미만
+                    dict(dtickrange=[86400000, 604800000], value="%y-%m-%d"), # 1주 미만
+                    dict(dtickrange=[604800000, "M12"], value="%y-%m"), # 1년 미만
+                    dict(dtickrange=["M12", None], value="%Y") # 1년 이상
+                ],
+                row=2, col=1
+            )
+            
             fig.update_yaxes(title_text="Price ($)", row=1, col=1)
-            fig.update_yaxes(title_text="Volume", showgrid=False, 
-                             fixedrange=False,  # 구간 확대 시 Y축 자동 최적화
-                             row=2, col=1) 
+            fig.update_yaxes(title_text="Volume", showgrid=False, fixedrange=False, row=2, col=1) 
 
             st.plotly_chart(fig, use_container_width=True)
 
@@ -274,15 +284,20 @@ if tk_info:
     st.subheader(f"📊 {category} 전체 요약")
     summary, k_all = [], get_korea_prices()
     for i, (name, info) in enumerate(st.session_state.tickers_dict[category].items()):
-        sdf = fetch_data(info['tck'], info['type'], "1일")
+        # [오류수정] 1년 주기로 조회 시 데이터가 부족할 수 있으므로 항상 일봉 기준으로 요약 계산
+        sdf = fetch_data(info['tck'], info['type'], "1일") 
         if not sdf.empty:
-            p, pr = float(sdf['Close'].iloc[-1]), float(sdf['Close'].iloc[-2]) if len(sdf)>1 else float(sdf['Close'].iloc[-1])
-            ch, hm = ((p / pr) - 1) * 100, ((sdf['Close'] / sdf['Close'].cummax()) - 1).min() * 100
+            p = float(sdf['Close'].iloc[-1])
+            # 데이터가 2개 미만인 경우(신규 상장 등) 대비
+            pr = float(sdf['Close'].iloc[-2]) if len(sdf) > 1 else p
+            ch = ((p / pr) - 1) * 100
+            hm = ((sdf['Close'] / sdf['Close'].cummax()) - 1).min() * 100
             cd = ((p / sdf['Close'].max()) - 1) * 100
             tag = "up-ticker" if ch >= 0 else "down-ticker"
             row = {"종목명": name, "변동": f'<span class="{tag}">{ch:+.2f}%</span>', "최악 MDD": f"{hm:.2f}%", "현재 낙폭": f"{cd:.2f}%", "_mdd": cd, "_rank": i}
             if info['type'] == "코인":
                 kp = k_all.get(info['tck'], 0)
+                # 환율 데이터가 정의되어 있는지 확인 (fx_rate는 위에서 미리 정의됨)
                 row["해외($)"] = f"${p:,.2f}"; row["국내(₩)"] = f"₩{kp:,.0f}"
                 row["차이(%)"] = f"{((kp/(p*fx_rate))-1)*100:+.2f}%" if kp > 0 else "-"
             else: row["현재가"] = f"{p:,.2f}"
